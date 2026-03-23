@@ -6,6 +6,7 @@ mod set;
 mod set_account;
 mod up;
 mod up_account;
+mod download;
 
 use std::process::exit;
 

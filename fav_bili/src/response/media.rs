@@ -4,6 +4,13 @@ use serde::Deserialize;
 use super::Up;
 
 #[derive(Debug, Deserialize)]
+pub struct MediaInfoSingle {
+    pub code: i64,
+    pub data: Option<Media>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MediaInfoResp {
     pub code: i64,
     pub data: Option<MediaInfoData>,

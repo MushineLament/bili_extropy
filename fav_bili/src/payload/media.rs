@@ -3,6 +3,12 @@ use serde::Serialize;
 
 #[derive(Debug, Payload, Serialize)]
 #[api_req(path = "/x/web-interface/wbi/view")]
-pub struct MediaInfoPayload {
+pub struct MediaInfoAidPayload {
     pub aid: i64,
+}
+
+#[derive(Debug, Payload, Serialize)]
+#[api_req(path = "/x/web-interface/wbi/view")]
+pub struct MediaInfoBvidPayload {
+    pub bvid: String,
 }

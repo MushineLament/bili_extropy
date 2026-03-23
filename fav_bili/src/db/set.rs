@@ -33,6 +33,8 @@ impl Db {
         set::Entity::find().all(&self.db).await.map_err(Into::into)
     }
 
+    // 激活 收藏夹id
+    /// 是如何获取收藏夹下的收藏id的？
     pub async fn activate_set(&self, set_id: i64) -> Result<()> {
         set::Entity::update(set::ActiveModel {
             set_id: Unchanged(set_id),

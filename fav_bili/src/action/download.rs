@@ -1,90 +1,71 @@
-use std::{io::Write as _, sync::Arc, thread::available_parallelism};
+use std::io::Write as _;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use api_req::ApiCaller as _;
 use avmux::{AFile, Mux as _, VFile};
-use dashmap::DashSet;
-use futures::StreamExt as _;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use reqwest::header::{CONTENT_LENGTH, HeaderValue};
 use sea_orm::ColumnTrait as _;
 use tempfile::NamedTempFile;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
 
 use crate::{
     api::BiliApi,
     cookies::{add_cookie_jar, parse_cookies},
-    db::{Db, db},
+    db::db,
     entity::{account, media},
-    payload::{DashPayload, MediaInfoAidPayload},
-    response::{Dash, DashData, DashResp, MediaInfoData, MediaInfoResp, Page},
+    payload::{DashPayload, MediaInfoAidPayload, MediaInfoBvidPayload},
+    response::{Dash, DashData, DashResp, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
     state::{AccountState, MediaState},
     table::head,
 };
 
 const BAR_TEMPLATE: &str = "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})";
 
-pub async fn pull() -> Result<()> {
+pub async fn only_download(bvid: &String) -> Result<()> {
     let db = db(false).await;
+    let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
+
+    // 获取一个活跃账户
     let accounts = db
         .get_accounts_filtered(account::Column::State.eq(AccountState::Active))
         .await?;
+    let account = accounts
+        .first()
+        .ok_or_else(|| anyhow!("No active account found. Please login first."))?;
 
-    let pulled_medias = Arc::new(DashSet::<i64>::new());
+    add_cookie_jar(parse_cookies(&account.cookies));
 
-    let medias = db.all_active_pending_medias().await?;
-    let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
+    let m = match BiliApi::request(MediaInfoBvidPayload { bvid: bvid.clone() }).await? {
+        MediaInfoSingle {
+            code,
+            data,
+            message,
+        } => data
+            .context(anyhow!(
+                "Info unreachable media<{} {}>: {}",
+                bvid,
+                code,
+                message.unwrap_or_default()
+            ))
+            .unwrap(),
+    };
 
-    for account in accounts {
-        info!("Pulling medias with account<{}>", account.name);
-        add_cookie_jar(parse_cookies(&account.cookies));
-        let token = CancellationToken::new();
+    let bars = bars.clone();
 
-        avmux::silent_log();
+    let media = media::Model {
+        id: m.id,
+        bv_id: m.bv_id.to_owned(),
+        title: m.title.to_owned(),
+        r#type: m.r#type.to_string(),
+        state: MediaState::Pending.to_string(),
+    };
 
-        let mut tasks = futures::stream::iter(
-            medias
-                .iter()
-                .filter(|media| !pulled_medias.contains(&media.id)),
-        )
-        .map(|media| {
-            let token = token.clone();
-            let db = db.clone();
-            let bars = bars.clone();
-            let pulled_medias = pulled_medias.clone();
-            async move {
-                tokio::select! {
-                    res = download(media, db, bars), if !token.is_cancelled() => match res {
-                        Ok(_) => { pulled_medias.insert(media.id); }
-                        Err(e) => error!("{}", e),
-                    },
-                    _ = token.cancelled() => {},
-                }
-            }
-        })
-        .buffer_unordered(available_parallelism().map(|num| num.get()).unwrap_or(8));
-        loop {
-            tokio::select! {
-                res = tasks.next() => {
-                    if res.is_none() {
-                        break;
-                    }
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    token.cancel();
-                    warn!("Received Ctrl-C");
-                    break;
-                }
-            }
-        }
-    }
-    drop(bars);
-    info!("Finished pulling");
+    download(&media, bars).await?;
+
     Ok(())
 }
 
-async fn download(media: &media::Model, db: Db, bars: MultiProgress) -> Result<()> {
+pub async fn download(media: &media::Model, bars: MultiProgress) -> Result<()> {
     match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),
@@ -209,6 +190,7 @@ async fn download(media: &media::Model, db: Db, bars: MultiProgress) -> Result<(
                                 "{filename}.mp4",
                                 filename = sanitize_filename::sanitize(&filename)
                             );
+
                             tokio::fs::rename(file_v.path(), format!("./{title}")).await?;
                         }
                         (None, Some(a)) => {
@@ -252,28 +234,16 @@ async fn download(media: &media::Model, db: Db, bars: MultiProgress) -> Result<(
                     break;
                 }
             }
-            db.set_media_state(media.id, MediaState::Completed).await?;
             Ok(())
         }
         MediaInfoResp {
-            code,
             message: option_msg,
             ..
-        } => {
-            db.set_media_state(
-                media.id,
-                match code {
-                    -403 | 62012 | 62002 => MediaState::PermissionDenied,
-                    _ => MediaState::Expired,
-                },
-            )
-            .await?;
-            Err(anyhow!(
-                "Info unreachable media<{}-{}>: {}",
-                media.id,
-                media.title,
-                option_msg.unwrap_or_default()
-            ))
-        }
+        } => Err(anyhow!(
+            "Info unreachable media<{}-{}>: {}",
+            media.id,
+            media.title,
+            option_msg.unwrap_or_default()
+        )),
     }
 }

@@ -17,7 +17,7 @@ use crate::{
     entity::{account, media, media_set, media_up, set, set_account, up, up_account},
     payload::{
         FollowingNumPayload, FollowingUpPayload, InSetPayload, InUpPayload, ListSetPayload,
-        MediaInfoPayload, PublishNumPayload,
+        MediaInfoAidPayload, PublishNumPayload,
     },
     response::{
         FollowingNumData, FollowingNumResp, FollowingUpData, FollowingUpResp, InSetData, InSetResp,
@@ -34,11 +34,15 @@ pub async fn fetch(prune: bool) -> Result<()> {
         .await?;
     for account in accounts.iter() {
         add_cookie_jar(parse_cookies(&account.cookies));
+
         let account_id = account.account_id;
+
         info!("Fetching sets with account<{}>", account.name);
+
         let ListSetResp {
             data: ListSetData { list },
         } = BiliApi::request(ListSetPayload { up_mid: account_id }).await?;
+
         if !list.is_empty() {
             db.upsert_sets(list.iter().map(|set| {
                 debug!("Updating set<{}>", set.title);
@@ -59,16 +63,20 @@ pub async fn fetch(prune: bool) -> Result<()> {
             }))
             .await?;
         }
+
         let mut old_set_ids: HashSet<i64> =
             HashSet::from_iter(db.get_set_ids_of_account(account_id).await?);
+
         for set in list {
             old_set_ids.remove(&set.id);
         }
+
         for set_id in old_set_ids {
             db.delete_set_account(set_account::Model { set_id, account_id })
                 .await?;
             warn!("Unlinked account<{}> and set<{}>", account.name, set_id,);
         }
+
         info!("Fetching following ups with account<{}>", account.name);
         let FollowingNumResp {
             data: FollowingNumData { following },
@@ -78,7 +86,9 @@ pub async fn fetch(prune: bool) -> Result<()> {
         if following == 0 {
             continue;
         }
+
         let page = (following - 1) / 50 + 1;
+
         let mut tasks = futures::stream::iter(1..=page)
             .map(|pn| async move {
                 let FollowingUpResp {
@@ -148,6 +158,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
             let page = (set.count - 1) / 20 + 1;
             let mut tasks = futures::stream::iter(1..=page)
                 .map(|pn| async move {
+                    // 通过收藏夹id，获取视频的id
                     let InSetResp {
                         data: InSetData { medias },
                     } = BiliApi::request(InSetPayload {
@@ -265,7 +276,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                 .filter(|media| !fetched_medias.contains(&media.id)),
         )
         .map(|media| async move {
-            match BiliApi::request(MediaInfoPayload { aid: media.id }).await? {
+            match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
                 MediaInfoResp {
                     data: Some(MediaInfoData { owner, staff, .. }),
                     code: 0,
