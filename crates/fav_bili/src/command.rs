@@ -197,9 +197,9 @@ impl FavCommand {
                     Command::new("pull")
                         .about("Pull fetched medias [alias: p]")
                         .aliases(["p"]),
-                    Command::new("download")
-                        .about("download single medias [alias: dl]")
-                        .aliases(["dl"]).args([
+                    Command::new("clone")
+                        .about("download single medias [alias: c]")
+                        .aliases(["c"]).args([
                             Arg::new("bv_id")
                                 .help("The set to deactivate")
                                 .value_parser(value_parser!(String))
@@ -372,11 +372,11 @@ impl FavCommand {
                         like(sub_matches.get_many("avids").unwrap().copied().collect()).await?
                     }
                     Some(("pull", _)) => pull().await?,
-                    Some(("download", sub_matches)) => {
+                    Some(("clone", sub_matches)) => {
                         for bvid in sub_matches.get_many::<String>("bv_id").unwrap() {
                             only_download(bvid)
                                 .await
-                                .context("Single Download Failed")
+                                .context("Single Media Clone Failed")
                                 .unwrap();
                         }
                     }

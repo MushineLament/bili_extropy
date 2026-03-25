@@ -90,7 +90,7 @@ impl Related<super::account::AccountEntity> for CollectionEntity {
     }
 }
 
-impl Related<super::media::Entity> for CollectionEntity {
+impl Related<super::media::MediaEntity> for CollectionEntity {
     fn to() -> RelationDef {
         super::collection_media::Relation::Media.def()
     }

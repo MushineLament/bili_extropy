@@ -52,7 +52,7 @@ pub async fn only_download(bvid: &String) -> Result<()> {
 
     let bars = bars.clone();
 
-    let media = media::Model {
+    let media = media::MediaModel {
         id: m.id,
         bv_id: m.bv_id.to_owned(),
         title: m.title.to_owned(),
@@ -65,7 +65,7 @@ pub async fn only_download(bvid: &String) -> Result<()> {
     Ok(())
 }
 
-pub async fn download(media: &media::Model, bars: MultiProgress) -> Result<()> {
+pub async fn download(media: &media::MediaModel, bars: MultiProgress) -> Result<()> {
     match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),

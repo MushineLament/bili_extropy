@@ -181,7 +181,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
             if !medias.is_empty() {
                 db.upsert_medias(medias.iter().map(|m| {
                     debug!("Updating media<{}>", m.title);
-                    media::Model {
+                    media::MediaModel {
                         id: m.id,
                         bv_id: m.bv_id.to_owned(),
                         title: m.title.to_owned(),
@@ -247,7 +247,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
             if !medias.is_empty() {
                 db.upsert_medias(medias.iter().map(|m| {
                     debug!("Updating media<{}>", m.title);
-                    media::Model {
+                    media::MediaModel {
                         id: m.id,
                         bv_id: m.bv_id.to_owned(),
                         title: m.title.to_owned(),

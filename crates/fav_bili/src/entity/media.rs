@@ -2,17 +2,20 @@
 
 use sea_orm::entity::prelude::*;
 
-#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
-pub struct Entity;
+type Entity = MediaEntity;
+type Model = MediaModel;
 
-impl EntityName for Entity {
+#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
+pub struct MediaEntity;
+
+impl EntityName for MediaEntity {
     fn table_name(&self) -> &str {
         "media"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
-pub struct Model {
+pub struct MediaModel {
     pub id: i64,
     pub bv_id: String,
     pub title: String,
@@ -48,7 +51,7 @@ pub enum Relation {
 }
 
 impl ColumnTrait for Column {
-    type EntityName = Entity;
+    type EntityName = MediaEntity;
     fn def(&self) -> ColumnDef {
         match self {
             Self::Id => ColumnType::BigInteger.def(),
@@ -63,25 +66,27 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::MediaSet => Entity::has_many(super::collection_media::CollectionMediaEntity).into(),
-            Self::MediaUp => Entity::has_many(super::up_media::UpMediaEntity).into(),
+            Self::MediaSet => {
+                MediaEntity::has_many(super::collection_media::CollectionMediaEntity).into()
+            }
+            Self::MediaUp => MediaEntity::has_many(super::up_media::UpMediaEntity).into(),
         }
     }
 }
 
-impl Related<super::collection_media::CollectionMediaEntity> for Entity {
+impl Related<super::collection_media::CollectionMediaEntity> for MediaEntity {
     fn to() -> RelationDef {
         Relation::MediaSet.def()
     }
 }
 
-impl Related<super::up_media::UpMediaEntity> for Entity {
+impl Related<super::up_media::UpMediaEntity> for MediaEntity {
     fn to() -> RelationDef {
         Relation::MediaUp.def()
     }
 }
 
-impl Related<super::collection::CollectionEntity> for Entity {
+impl Related<super::collection::CollectionEntity> for MediaEntity {
     fn to() -> RelationDef {
         super::collection_media::Relation::Set.def()
     }
@@ -90,7 +95,7 @@ impl Related<super::collection::CollectionEntity> for Entity {
     }
 }
 
-impl Related<super::up::Entity> for Entity {
+impl Related<super::up::Entity> for MediaEntity {
     fn to() -> RelationDef {
         super::up_media::Relation::Up.def()
     }

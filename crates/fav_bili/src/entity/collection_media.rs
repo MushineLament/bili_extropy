@@ -58,7 +58,7 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::Media => CollectionMediaEntity::belongs_to(super::media::Entity)
+            Self::Media => CollectionMediaEntity::belongs_to(super::media::MediaEntity)
                 .from(Column::Id)
                 .to(super::media::Column::Id)
                 .into(),
@@ -70,7 +70,7 @@ impl RelationTrait for Relation {
     }
 }
 
-impl Related<super::media::Entity> for CollectionMediaEntity {
+impl Related<super::media::MediaEntity> for CollectionMediaEntity {
     fn to() -> RelationDef {
         Relation::Media.def()
     }

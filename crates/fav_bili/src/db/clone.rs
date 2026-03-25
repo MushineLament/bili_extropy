@@ -6,9 +6,9 @@ use crate::{db::Db, entity::media};
 impl Db {
     pub async fn download_upsert_medias(
         &self,
-        medias: impl IntoIterator<Item = media::Model>,
+        medias: impl IntoIterator<Item = media::MediaModel>,
     ) -> Result<()> {
-        media::Entity::insert_many(medias.into_iter().map(|m| m.into_active_model()))
+        media::MediaEntity::insert_many(medias.into_iter().map(|m| m.into_active_model()))
             .on_conflict(
                 OnConflict::column(media::Column::BvId)
                     .update_columns([media::Column::Title, media::Column::Id, media::Column::Type])

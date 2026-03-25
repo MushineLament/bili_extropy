@@ -1,12 +1,12 @@
 mod account;
 mod media;
 mod collection_media;
-mod media_up;
-mod set;
-mod set_account;
+mod up_media;
+mod collection;
+mod account_collection;
 mod up;
 mod up_account;
-mod download;
+mod clone;
 
 use std::process::exit;
 

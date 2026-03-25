@@ -11,9 +11,9 @@ use crate::{entity::media, state::MediaState};
 impl Db {
     pub async fn upsert_medias(
         &self,
-        medias: impl IntoIterator<Item = media::Model>,
+        medias: impl IntoIterator<Item = media::MediaModel>,
     ) -> Result<()> {
-        media::Entity::insert_many(medias.into_iter().map(|m| m.into_active_model()))
+        media::MediaEntity::insert_many(medias.into_iter().map(|m| m.into_active_model()))
             .on_conflict(
                 OnConflict::column(media::Column::BvId)
                     .update_columns([media::Column::Title, media::Column::Id, media::Column::Type])
@@ -25,7 +25,7 @@ impl Db {
     }
 
     pub async fn set_media_state(&self, id: i64, state: MediaState) -> Result<()> {
-        media::Entity::update(media::ActiveModel {
+        media::MediaEntity::update(media::ActiveModel {
             id: Unchanged(id),
             state: Set(state.to_string()),
             ..Default::default()
@@ -35,15 +35,15 @@ impl Db {
         Ok(())
     }
 
-    pub async fn all_medias(&self) -> Result<Vec<media::Model>> {
-        media::Entity::find()
+    pub async fn all_medias(&self) -> Result<Vec<media::MediaModel>> {
+        media::MediaEntity::find()
             .all(&self.db)
             .await
             .map_err(Into::into)
     }
 
-    pub async fn all_active_medias(&self) -> Result<Vec<media::Model>> {
-        media::Entity::find()
+    pub async fn all_active_medias(&self) -> Result<Vec<media::MediaModel>> {
+        media::MediaEntity::find()
             .from_raw_sql(Statement::from_string(
                 DatabaseBackend::Sqlite,
                 r#"
@@ -69,8 +69,8 @@ WHERE
             .map_err(Into::into)
     }
 
-    pub async fn all_active_pending_medias(&self) -> Result<Vec<media::Model>> {
-        media::Entity::find()
+    pub async fn all_active_pending_medias(&self) -> Result<Vec<media::MediaModel>> {
+        media::MediaEntity::find()
             .from_raw_sql(Statement::from_string(
                 DatabaseBackend::Sqlite,
                 r#"

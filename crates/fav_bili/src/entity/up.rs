@@ -84,7 +84,7 @@ impl Related<super::account::AccountEntity> for Entity {
     }
 }
 
-impl Related<super::media::Entity> for Entity {
+impl Related<super::media::MediaEntity> for Entity {
     fn to() -> RelationDef {
         super::up_media::Relation::Media.def()
     }

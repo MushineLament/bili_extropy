@@ -84,7 +84,7 @@ pub async fn pull() -> Result<()> {
     Ok(())
 }
 
-async fn download(media: &media::Model, db: Db, bars: MultiProgress) -> Result<()> {
+async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Result<()> {
     match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),

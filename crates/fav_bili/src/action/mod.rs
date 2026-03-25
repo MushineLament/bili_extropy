@@ -5,7 +5,7 @@ mod fetch;
 mod like;
 mod list;
 mod pull;
-mod download;
+mod clone;
 
 pub use activate::*;
 pub use auth::*;
@@ -14,4 +14,4 @@ pub use fetch::*;
 pub use like::*;
 pub use list::*;
 pub use pull::*;
-pub use download::*;
+pub use clone::*;
