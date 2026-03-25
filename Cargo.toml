@@ -1,17 +1,22 @@
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[workspace]
-members = ["fav_bili", "migration"]
-default-members = ["fav_bili"]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "entropy_bili"
+version = "0.1.0"
+edition = "2024"
 authors = ["Louis <836250617@qq.com>"]
 license = "MIT"
-edition = "2024"
 repository = "https://github.com/kingwingfly/fav"
 documentation = "https://github.com/kingwingfly/fav"
 
-[workspace.dependencies]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = ["crates/fav_bili", "crates/migration"]
+resolver = "2"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+tracing = "0.1"
+
+fav_bili = { path = "./crates/fav_bili" }
 
 [profile.release]
 lto = "fat"

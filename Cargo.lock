@@ -929,6 +929,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "entropy_bili"
+version = "0.1.0"
+dependencies = [
+ "fav_bili",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
