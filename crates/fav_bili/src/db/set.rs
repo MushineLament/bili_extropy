@@ -7,14 +7,14 @@ use sea_orm::{
 };
 
 use super::Db;
-use crate::{entity::set, state::SetState};
+use crate::{entity::collection, state::SetState};
 
 impl Db {
-    pub async fn upsert_sets(&self, sets: impl IntoIterator<Item = set::Model>) -> Result<()> {
-        set::Entity::insert_many(sets.into_iter().map(|s| s.into_active_model()))
+    pub async fn upsert_sets(&self, sets: impl IntoIterator<Item = collection::CollectionModel>) -> Result<()> {
+        collection::CollectionEntity::insert_many(sets.into_iter().map(|s| s.into_active_model()))
             .on_conflict(
-                OnConflict::column(set::Column::SetId)
-                    .update_columns([set::Column::Name, set::Column::Count])
+                OnConflict::column(collection::Column::SetId)
+                    .update_columns([collection::Column::Name, collection::Column::Count])
                     .to_owned(),
             )
             .exec_without_returning(&self.db)
@@ -22,21 +22,21 @@ impl Db {
         Ok(())
     }
 
-    pub async fn get_set(&self, set_id: i64) -> Result<set::Model> {
-        set::Entity::find_by_id(set_id)
+    pub async fn get_set(&self, set_id: i64) -> Result<collection::CollectionModel> {
+        collection::CollectionEntity::find_by_id(set_id)
             .one(&self.db)
             .await?
             .context(format!("Unknown set<{set_id}>"))
     }
 
-    pub async fn all_sets(&self) -> Result<Vec<set::Model>> {
-        set::Entity::find().all(&self.db).await.map_err(Into::into)
+    pub async fn all_sets(&self) -> Result<Vec<collection::CollectionModel>> {
+        collection::CollectionEntity::find().all(&self.db).await.map_err(Into::into)
     }
 
     // 激活 收藏夹id
     /// 是如何获取收藏夹下的收藏id的？
     pub async fn activate_set(&self, set_id: i64) -> Result<()> {
-        set::Entity::update(set::ActiveModel {
+        collection::CollectionEntity::update(collection::ActiveModel {
             set_id: Unchanged(set_id),
             state: Set(SetState::Active.to_string()),
             ..Default::default()
@@ -47,9 +47,9 @@ impl Db {
     }
 
     pub async fn activate_all_sets(&self) -> Result<()> {
-        set::Entity::update_many()
+        collection::CollectionEntity::update_many()
             .col_expr(
-                set::Column::State,
+                collection::Column::State,
                 SimpleExpr::Value(Value::String(Some(Box::new(SetState::Active.to_string())))),
             )
             .exec(&self.db)
@@ -58,7 +58,7 @@ impl Db {
     }
 
     pub async fn deactivate_set(&self, set_id: i64) -> Result<()> {
-        set::Entity::update(set::ActiveModel {
+        collection::CollectionEntity::update(collection::ActiveModel {
             set_id: Unchanged(set_id),
             state: Set(SetState::Inactive.to_string()),
             ..Default::default()
@@ -69,9 +69,9 @@ impl Db {
     }
 
     pub async fn deactivate_all_sets(&self) -> Result<()> {
-        set::Entity::update_many()
+        collection::CollectionEntity::update_many()
             .col_expr(
-                set::Column::State,
+                collection::Column::State,
                 SimpleExpr::Value(Value::String(Some(Box::new(
                     SetState::Inactive.to_string(),
                 )))),

@@ -1,7 +1,11 @@
-#[allow(unused)]
-mod entity_inner;
-
-pub use entity_inner::*;
+pub mod account;
+pub mod account_collection;
+pub mod collection;
+pub mod collection_media;
+pub mod media;
+pub mod up;
+pub mod up_account;
+pub mod up_media;
 
 use crate::table::head;
 
@@ -9,13 +13,13 @@ pub trait ToTableRecord<const N: usize> {
     fn to_record(self) -> [String; N];
 }
 
-impl ToTableRecord<3> for account::Model {
+impl ToTableRecord<3> for account::AccountModel {
     fn to_record(self) -> [String; 3] {
         [self.account_id.to_string(), self.name, self.state]
     }
 }
 
-impl ToTableRecord<4> for set::Model {
+impl ToTableRecord<4> for collection::CollectionModel {
     fn to_record(self) -> [String; 4] {
         [
             self.set_id.to_string(),

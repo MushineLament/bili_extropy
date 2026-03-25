@@ -57,7 +57,7 @@ pub async fn login() -> Result<()> {
         data: WbiData { mid, uname, .. },
     } = BiliApi::request(WbiPayload).await?;
     
-    db.upsert_account(account::Model {
+    db.upsert_account(account::AccountModel {
         account_id: mid,
         name: uname.to_owned(),
         cookies,
@@ -77,7 +77,7 @@ pub async fn usecookies(cookies: String) -> Result<()> {
     let WbiResp {
         data: WbiData { mid, uname, .. },
     } = BiliApi::request(WbiPayload).await?;
-    db.upsert_account(account::Model {
+    db.upsert_account(account::AccountModel {
         account_id: mid,
         name: uname.to_owned(),
         cookies,
@@ -152,7 +152,7 @@ pub async fn check_all() -> Result<()> {
     Ok(())
 }
 
-async fn check_account(account: account::Model) -> Result<()> {
+async fn check_account(account: account::AccountModel) -> Result<()> {
     add_cookie_jar(parse_cookies(&account.cookies));
     match BiliApi::request(WbiPayload).await {
         Ok(WbiResp {

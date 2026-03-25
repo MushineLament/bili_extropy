@@ -2,30 +2,33 @@
 
 use sea_orm::entity::prelude::*;
 
-#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
-pub struct Entity;
+type Entity = AccountCollectionEntity;
+type Model = AccountCollectionModel;
 
-impl EntityName for Entity {
+#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
+pub struct AccountCollectionEntity;
+
+impl EntityName for AccountCollectionEntity {
     fn table_name(&self) -> &str {
-        "up_account"
+        "set_account"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
-pub struct Model {
-    pub up_id: i64,
+pub struct AccountCollectionModel {
+    pub set_id: i64,
     pub account_id: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
-    UpId,
+    SetId,
     AccountId,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
-    UpId,
+    SetId,
     AccountId,
 }
 
@@ -39,14 +42,14 @@ impl PrimaryKeyTrait for PrimaryKey {
 #[derive(Copy, Clone, Debug, EnumIter)]
 pub enum Relation {
     Account,
-    Up,
+    Set,
 }
 
 impl ColumnTrait for Column {
-    type EntityName = Entity;
+    type EntityName = AccountCollectionEntity;
     fn def(&self) -> ColumnDef {
         match self {
-            Self::UpId => ColumnType::BigInteger.def(),
+            Self::SetId => ColumnType::BigInteger.def(),
             Self::AccountId => ColumnType::BigInteger.def(),
         }
     }
@@ -55,27 +58,27 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::Account => Entity::belongs_to(super::account::Entity)
+            Self::Account => AccountCollectionEntity::belongs_to(super::account::AccountEntity)
                 .from(Column::AccountId)
                 .to(super::account::Column::AccountId)
                 .into(),
-            Self::Up => Entity::belongs_to(super::up::Entity)
-                .from(Column::UpId)
-                .to(super::up::Column::UpId)
+            Self::Set => AccountCollectionEntity::belongs_to(super::collection::CollectionEntity)
+                .from(Column::SetId)
+                .to(super::collection::Column::SetId)
                 .into(),
         }
     }
 }
 
-impl Related<super::account::Entity> for Entity {
+impl Related<super::account::AccountEntity> for AccountCollectionEntity {
     fn to() -> RelationDef {
         Relation::Account.def()
     }
 }
 
-impl Related<super::up::Entity> for Entity {
+impl Related<super::collection::CollectionEntity> for AccountCollectionEntity {
     fn to() -> RelationDef {
-        Relation::Up.def()
+        Relation::Set.def()
     }
 }
 

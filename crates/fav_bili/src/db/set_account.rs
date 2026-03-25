@@ -2,14 +2,14 @@ use anyhow::Result;
 use sea_orm::{ColumnTrait as _, EntityTrait as _, IntoActiveModel as _, QueryFilter as _};
 
 use super::Db;
-use crate::entity::set_account;
+use crate::entity::account_collection;
 
 impl Db {
     pub async fn upsert_set_accounts(
         &self,
-        set_accounts: impl IntoIterator<Item = set_account::Model>,
+        set_accounts: impl IntoIterator<Item = account_collection::AccountCollectionModel>,
     ) -> Result<()> {
-        set_account::Entity::insert_many(set_accounts.into_iter().map(|m| m.into_active_model()))
+        account_collection::AccountCollectionEntity::insert_many(set_accounts.into_iter().map(|m| m.into_active_model()))
             .on_conflict_do_nothing()
             .exec_without_returning(&self.db)
             .await?;
@@ -17,16 +17,16 @@ impl Db {
     }
 
     pub async fn get_set_ids_of_account(&self, account_id: i64) -> Result<Vec<i64>> {
-        set_account::Entity::find()
-            .filter(set_account::Column::AccountId.eq(account_id))
+        account_collection::AccountCollectionEntity::find()
+            .filter(account_collection::Column::AccountId.eq(account_id))
             .all(&self.db)
             .await
             .map_err(Into::into)
             .map(|res| res.into_iter().map(|m| m.set_id).collect())
     }
 
-    pub async fn delete_set_account(&self, set_account: set_account::Model) -> Result<()> {
-        set_account::Entity::delete_by_id((set_account.set_id, set_account.account_id))
+    pub async fn delete_set_account(&self, set_account: account_collection::AccountCollectionModel) -> Result<()> {
+        account_collection::AccountCollectionEntity::delete_by_id((set_account.set_id, set_account.account_id))
             .exec(&self.db)
             .await?;
         Ok(())

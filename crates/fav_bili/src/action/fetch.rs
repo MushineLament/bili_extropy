@@ -14,7 +14,7 @@ use crate::{
     api::BiliApi,
     cookies::{add_cookie_jar, parse_cookies},
     db::db,
-    entity::{account, media, media_set, media_up, set, set_account, up, up_account},
+    entity::{account, media, collection_media, up_media, collection, account_collection, up, up_account},
     payload::{
         FollowingNumPayload, FollowingUpPayload, InSetPayload, InUpPayload, ListSetPayload,
         MediaInfoAidPayload, PublishNumPayload,
@@ -46,7 +46,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
         if !list.is_empty() {
             db.upsert_sets(list.iter().map(|set| {
                 debug!("Updating set<{}>", set.title);
-                set::Model {
+                collection::CollectionModel {
                     set_id: set.id,
                     name: set.title.to_owned(),
                     count: set.media_count,
@@ -56,7 +56,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
             .await?;
             db.upsert_set_accounts(list.iter().map(|set| {
                 debug!("Linking account<{}> and set<{}>", account.name, set.title,);
-                set_account::Model {
+                account_collection::AccountCollectionModel {
                     set_id: set.id,
                     account_id,
                 }
@@ -72,7 +72,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
         }
 
         for set_id in old_set_ids {
-            db.delete_set_account(set_account::Model { set_id, account_id })
+            db.delete_set_account(account_collection::AccountCollectionModel { set_id, account_id })
                 .await?;
             warn!("Unlinked account<{}> and set<{}>", account.name, set_id,);
         }
@@ -192,7 +192,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                 .await?;
                 db.upsert_media_sets(medias.into_iter().map(|m| {
                     debug!("Linking media<{}> and set<{}>", m.title, set.name);
-                    media_set::Model { id: m.id, set_id }
+                    collection_media::CollectionMediaModel { id: m.id, set_id }
                 }))
                 .await?;
             }
@@ -258,7 +258,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                 .await?;
                 db.upsert_media_ups(medias.into_iter().map(|m| {
                     debug!("Linking media<{}> and up<{}>", m.title, up.name);
-                    media_up::Model { id: m.id, up_id }
+                    up_media::UpMediaModel { id: m.id, up_id }
                 }))
                 .await?;
             }
@@ -325,7 +325,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
         if !media_ups.is_empty() {
             db.upsert_media_ups(media_ups.iter().map(|(media, up)| {
                 debug!("Linking media<{}> and up<{}>", media.title, up.name);
-                media_up::Model {
+                up_media::UpMediaModel {
                     id: media.id,
                     up_id: up.mid,
                 }

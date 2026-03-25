@@ -85,7 +85,7 @@ pub async fn like(avids: Vec<i64>) -> Result<()> {
         add_cookie_jar(cookies.into_values());
         info!("Saving cookies account<{}>", account.name);
         let cookies = current_cookies()?;
-        db.upsert_account(account::Model {
+        db.upsert_account(account::AccountModel {
             account_id: account.account_id,
             name: account.name,
             cookies,

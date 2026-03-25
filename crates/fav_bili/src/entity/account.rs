@@ -2,34 +2,37 @@
 
 use sea_orm::entity::prelude::*;
 
-#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
-pub struct Entity;
+type Entity = AccountEntity;
+type Model = AccountModel;
 
-impl EntityName for Entity {
+#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
+pub struct AccountEntity;
+
+impl EntityName for AccountEntity {
     fn table_name(&self) -> &str {
-        "set"
+        "account"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
-pub struct Model {
-    pub set_id: i64,
+pub struct AccountModel {
+    pub account_id: i64,
     pub name: String,
-    pub count: i64,
+    pub cookies: String,
     pub state: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
-    SetId,
+    AccountId,
     Name,
-    Count,
+    Cookies,
     State,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
-    SetId,
+    AccountId,
 }
 
 impl PrimaryKeyTrait for PrimaryKey {
@@ -41,17 +44,17 @@ impl PrimaryKeyTrait for PrimaryKey {
 
 #[derive(Copy, Clone, Debug, EnumIter)]
 pub enum Relation {
-    MediaSet,
     SetAccount,
+    UpAccount,
 }
 
 impl ColumnTrait for Column {
-    type EntityName = Entity;
+    type EntityName = AccountEntity;
     fn def(&self) -> ColumnDef {
         match self {
-            Self::SetId => ColumnType::BigInteger.def(),
+            Self::AccountId => ColumnType::BigInteger.def(),
             Self::Name => ColumnType::String(StringLen::None).def(),
-            Self::Count => ColumnType::BigInteger.def(),
+            Self::Cookies => ColumnType::String(StringLen::None).def(),
             Self::State => ColumnType::custom("enum_text").def(),
         }
     }
@@ -60,39 +63,39 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::MediaSet => Entity::has_many(super::media_set::Entity).into(),
-            Self::SetAccount => Entity::has_many(super::set_account::Entity).into(),
+            Self::SetAccount => AccountEntity::has_many(super::account_collection::AccountCollectionEntity).into(),
+            Self::UpAccount => AccountEntity::has_many(super::up_account::Entity).into(),
         }
     }
 }
 
-impl Related<super::media_set::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::MediaSet.def()
-    }
-}
-
-impl Related<super::set_account::Entity> for Entity {
+impl Related<super::account_collection::AccountCollectionEntity> for AccountEntity {
     fn to() -> RelationDef {
         Relation::SetAccount.def()
     }
 }
 
-impl Related<super::account::Entity> for Entity {
+impl Related<super::up_account::Entity> for AccountEntity {
     fn to() -> RelationDef {
-        super::set_account::Relation::Account.def()
-    }
-    fn via() -> Option<RelationDef> {
-        Some(super::set_account::Relation::Set.def().rev())
+        Relation::UpAccount.def()
     }
 }
 
-impl Related<super::media::Entity> for Entity {
+impl Related<super::collection::CollectionEntity> for AccountEntity {
     fn to() -> RelationDef {
-        super::media_set::Relation::Media.def()
+        super::account_collection::Relation::Set.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(super::media_set::Relation::Set.def().rev())
+        Some(super::account_collection::Relation::Account.def().rev())
+    }
+}
+
+impl Related<super::up::Entity> for AccountEntity {
+    fn to() -> RelationDef {
+        super::up_account::Relation::Up.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::up_account::Relation::Account.def().rev())
     }
 }
 

@@ -2,31 +2,34 @@
 
 use sea_orm::entity::prelude::*;
 
-#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
-pub struct Entity;
+type Entity = CollectionMediaEntity;
+type Model = CollectionMediaModel;
 
-impl EntityName for Entity {
+#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
+pub struct CollectionMediaEntity;
+
+impl EntityName for CollectionMediaEntity {
     fn table_name(&self) -> &str {
-        "set_account"
+        "media_set"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
-pub struct Model {
+pub struct CollectionMediaModel {
+    pub id: i64,
     pub set_id: i64,
-    pub account_id: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
+    Id,
     SetId,
-    AccountId,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
+    Id,
     SetId,
-    AccountId,
 }
 
 impl PrimaryKeyTrait for PrimaryKey {
@@ -38,16 +41,16 @@ impl PrimaryKeyTrait for PrimaryKey {
 
 #[derive(Copy, Clone, Debug, EnumIter)]
 pub enum Relation {
-    Account,
+    Media,
     Set,
 }
 
 impl ColumnTrait for Column {
-    type EntityName = Entity;
+    type EntityName = CollectionMediaEntity;
     fn def(&self) -> ColumnDef {
         match self {
+            Self::Id => ColumnType::BigInteger.def(),
             Self::SetId => ColumnType::BigInteger.def(),
-            Self::AccountId => ColumnType::BigInteger.def(),
         }
     }
 }
@@ -55,25 +58,25 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::Account => Entity::belongs_to(super::account::Entity)
-                .from(Column::AccountId)
-                .to(super::account::Column::AccountId)
+            Self::Media => CollectionMediaEntity::belongs_to(super::media::Entity)
+                .from(Column::Id)
+                .to(super::media::Column::Id)
                 .into(),
-            Self::Set => Entity::belongs_to(super::set::Entity)
+            Self::Set => CollectionMediaEntity::belongs_to(super::collection::CollectionEntity)
                 .from(Column::SetId)
-                .to(super::set::Column::SetId)
+                .to(super::collection::Column::SetId)
                 .into(),
         }
     }
 }
 
-impl Related<super::account::Entity> for Entity {
+impl Related<super::media::Entity> for CollectionMediaEntity {
     fn to() -> RelationDef {
-        Relation::Account.def()
+        Relation::Media.def()
     }
 }
 
-impl Related<super::set::Entity> for Entity {
+impl Related<super::collection::CollectionEntity> for CollectionMediaEntity {
     fn to() -> RelationDef {
         Relation::Set.def()
     }
