@@ -48,6 +48,8 @@ avmux = { version = "0.2", default-features = false, features = ["link_system_ff
 sanitize-filename = { version = "0.6" }
 paste = { version = "1.0" }
 
+migration ={ path = "../migration"}
+
 [build-dependencies]
 vergen = { version = "9.0", features = ["rustc"] }
 vergen-gitcl = { version = "1.0", features = [] }

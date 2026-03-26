@@ -10,5 +10,3 @@ mod state;
 mod table;
 mod version;
 mod wbi;
-
-pub mod migration;

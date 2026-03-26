@@ -40,14 +40,12 @@ pub async fn only_download(bvid: &String) -> Result<()> {
             code,
             data,
             message,
-        } => data
-            .context(anyhow!(
-                "Info unreachable media<{} {}>: {}",
-                bvid,
-                code,
-                message.unwrap_or_default()
-            ))
-            .unwrap(),
+        } => data.expect(&format!(
+            "Info unreachable bvid<{}>,state<{}>: {}",
+            bvid,
+            code,
+            message.unwrap_or_default()
+        )),
     };
 
     let bars = bars.clone();

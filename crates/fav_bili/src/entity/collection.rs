@@ -44,7 +44,7 @@ impl PrimaryKeyTrait for PrimaryKey {
 
 #[derive(Copy, Clone, Debug, EnumIter)]
 pub enum Relation {
-    MediaSet,
+    MediaCollection,
     SetAccount,
 }
 
@@ -63,15 +63,20 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::MediaSet => CollectionEntity::has_many(super::collection_media::CollectionMediaEntity).into(),
-            Self::SetAccount => CollectionEntity::has_many(super::account_collection::AccountCollectionEntity).into(),
+            Self::MediaCollection => {
+                CollectionEntity::has_many(super::collection_media::CollectionMediaEntity).into()
+            }
+            Self::SetAccount => {
+                CollectionEntity::has_many(super::account_collection::AccountCollectionEntity)
+                    .into()
+            }
         }
     }
 }
 
 impl Related<super::collection_media::CollectionMediaEntity> for CollectionEntity {
     fn to() -> RelationDef {
-        Relation::MediaSet.def()
+        Relation::MediaCollection.def()
     }
 }
 
@@ -96,6 +101,15 @@ impl Related<super::media::MediaEntity> for CollectionEntity {
     }
     fn via() -> Option<RelationDef> {
         Some(super::collection_media::Relation::Set.def().rev())
+    }
+}
+
+impl Related<super::status::StatusEntity> for CollectionEntity {
+    fn to() -> RelationDef {
+        super::collection::Relation::MediaCollection.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::collection::Relation::MediaCollection.def().rev())
     }
 }
 

@@ -997,6 +997,7 @@ dependencies = [
  "hex",
  "indicatif",
  "md5",
+ "migration",
  "paste",
  "qrcode",
  "reqwest 0.13.1",
@@ -1838,7 +1839,6 @@ checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 name = "migration"
 version = "0.1.0"
 dependencies = [
- "fav_bili",
  "sea-orm-migration",
  "tokio",
 ]

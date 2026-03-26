@@ -186,6 +186,21 @@ impl FavCommand {
                                         .action(ArgAction::Append),
                                 ]),
                         ]),
+                    Command::new("status")
+                        .about("download media into folder [alias: s]")
+                        .aliases(["s"])
+                        .subcommand(
+                        Command::new("set")
+                            .about("Set download folder")
+                            .args([
+                                Arg::new("name")
+                                    .help("Name of the folder")
+                                    .required(true),
+                                Arg::new("path")
+                                    .help("Path to the folder")
+                                    .required(true),
+                            ])
+                    ),
                     Command::new("fetch")
                         .about("Fetch metadata of following ups, fav sets, medias, ups [alias: f]")
                         .aliases(["f"])
@@ -368,6 +383,19 @@ impl FavCommand {
                         _ => unreachable!(),
                     },
                     Some(("fetch", sub_matches)) => fetch(sub_matches.get_flag("prune")).await?,
+                    Some(("status", sub_matches)) => match sub_matches.subcommand() {
+                        Some(("set", sub_matches)) => {
+                            let name = sub_matches
+                                .get_one::<String>("name")
+                                .context("Folder is Not Allow")?;
+                            let path = sub_matches
+                                .get_one::<String>("path")
+                                .context("Not folder path")?;
+
+                            status_set(name, path).await?;
+                        }
+                        _ => status().await?,
+                    },
                     Some(("like", sub_matches)) => {
                         like(sub_matches.get_many("avids").unwrap().copied().collect()).await?
                     }

@@ -1,22 +1,22 @@
 mod account;
-mod media;
-mod collection_media;
-mod up_media;
-mod collection;
 mod account_collection;
+mod clone;
+mod collection;
+mod collection_media;
+mod media;
+mod status;
 mod up;
 mod up_account;
-mod clone;
+mod up_media;
 
 use std::process::exit;
 
 use anyhow::{Context, Result};
+use migration::Migrator;
 use sea_orm::{Database, DatabaseConnection};
 use sea_orm_migration::MigratorTrait as _;
 use tokio::sync::OnceCell;
 use tracing::error;
-
-use crate::migration::Migrator;
 
 static DB: OnceCell<Db> = OnceCell::const_new();
 

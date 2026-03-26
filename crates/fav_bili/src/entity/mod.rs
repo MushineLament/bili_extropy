@@ -6,6 +6,7 @@ pub mod media;
 pub mod up;
 pub mod up_account;
 pub mod up_media;
+pub mod status;
 
 use crate::table::head;
 

@@ -11,6 +11,27 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
+                    .table(Status::Table)
+                    .if_not_exists()
+                    .col(big_unsigned(Status::Id).auto_increment().primary_key())
+                    .col(string(Status::Name))
+                    .col(string(Status::Path))
+                    .col(ColumnDef::new(Status::CollectionId).big_unsigned().null())
+                    .col(
+                        enumeration(
+                            Status::State,
+                            "state",
+                            ["Active", "Inactive", "Unreachable"],
+                        )
+                        .default("Inactive"),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
                     .table(Account::Table)
                     .if_not_exists()
                     .col(big_unsigned_uniq(Account::AccountId))
@@ -238,6 +259,9 @@ impl MigrationTrait for Migration {
             .drop_table(Table::drop().table(Media::Table).to_owned())
             .await
             .unwrap();
+        manager
+            .drop_table(Table::drop().table(Status::Table).to_owned())
+            .await?;
         Ok(())
     }
 }
@@ -304,4 +328,14 @@ enum UpAccount {
     Table,
     UpId,
     AccountId,
+}
+
+#[derive(DeriveIden)]
+enum Status {
+    Table,
+    Id,
+    Name,
+    Path,
+    CollectionId,
+    State,
 }
