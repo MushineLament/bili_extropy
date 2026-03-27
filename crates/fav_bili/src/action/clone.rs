@@ -1,4 +1,8 @@
-use std::io::Write as _;
+use std::{
+    fs::{self, File},
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, anyhow};
 use api_req::ApiCaller as _;
@@ -58,12 +62,22 @@ pub async fn only_download(bvid: &String) -> Result<()> {
         state: MediaState::Pending.to_string(),
     };
 
-    download(&media, bars).await?;
+    let collection = db.get_active_status().await?;
+
+    let path = Path::new(&collection.path);
+
+    let file = path.join(&collection.name);
+
+    if !file.exists() {
+        fs::create_dir(&file)?;
+    }
+
+    download(&media, bars, &file).await?;
 
     Ok(())
 }
 
-pub async fn download(media: &media::MediaModel, bars: MultiProgress) -> Result<()> {
+pub async fn download(media: &media::MediaModel, bars: MultiProgress, path: &Path) -> Result<()> {
     match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),
@@ -142,7 +156,13 @@ pub async fn download(media: &media::MediaModel, bars: MultiProgress) -> Result<
                                 "{filename}.mp4",
                                 filename = sanitize_filename::sanitize(&filename)
                             );
-                            let output_path = format!("./{title}");
+
+                            let output_path = path.join(title);
+
+                            let output_path = output_path
+                                .to_str()
+                                .context("get download folder path err")?;
+
                             if (
                                 VFile::new(file_v.path().to_string_lossy()),
                                 AFile::new(file_a.path().to_string_lossy()),

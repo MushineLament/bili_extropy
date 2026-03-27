@@ -77,6 +77,9 @@ impl FavCommand {
                             Command::new("media")
                                 .about("List medias [alias: video bv, m, v]")
                                 .aliases(["video", "bv", "m", "v"]),
+                            Command::new("status")
+                                .about("List status [alias: id, i]")
+                                .aliases(["id", "i"]),
                         ]),
                     Command::new("activate")
                         .about("Activate obj [alias: active, a]")
@@ -199,6 +202,16 @@ impl FavCommand {
                                 Arg::new("path")
                                     .help("Path to the folder")
                                     .required(true),
+                                Arg::new("switch")
+                                    .help("switch download into this path folder")
+                                    .long("switch")
+                                    .short('a')
+                                    .action(ArgAction::SetTrue),
+                                Arg::new("collection")  // 新增
+                                    .help("Collection ID to associate with the folder")
+                                    .long("collection")
+                                    .value_parser(value_parser!(i64))
+                                    .action(ArgAction::Set)
                             ])
                     ),
                     Command::new("fetch")
@@ -314,6 +327,7 @@ impl FavCommand {
                         Some(("set", _)) => list_sets().await?,
                         Some(("up", _)) => list_ups().await?,
                         Some(("media", _)) => list_medias().await?,
+                        Some(("status", _)) => list_status().await?,
                         _ => unreachable!(),
                     },
                     Some(("activate", sub_matches)) => match sub_matches.subcommand() {
@@ -392,7 +406,10 @@ impl FavCommand {
                                 .get_one::<String>("path")
                                 .context("Not folder path")?;
 
-                            status_set(name, path).await?;
+                            let active = sub_matches.get_flag("switch");
+                            let collection_id = sub_matches.get_one::<i64>("collection").copied();
+
+                            status_set(name, path, active, collection_id).await?;
                         }
                         _ => status().await?,
                     },

@@ -45,3 +45,14 @@ pub async fn list_ups() -> Result<()> {
     println!("{}\nrows: {}", table, table.count_rows() - 1);
     Ok(())
 }
+
+pub async fn list_status() -> Result<()> {
+    let db = db(false).await;
+    let status = db.all_status().await?;
+    let table = table(
+        ["Id", "CollectionId", "State", "Name", "Path"],
+        status.into_iter().map(ToTableRecord::to_record),
+    );
+    println!("{}\nrows: {}", table, table.count_rows() - 1);
+    Ok(())
+}

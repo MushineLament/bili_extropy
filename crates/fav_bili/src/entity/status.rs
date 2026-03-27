@@ -16,7 +16,8 @@ impl EntityName for StatusEntity {
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct StatusModel {
-    pub id: i64,
+    #[sea_orm(primary_key, auto_increment = true)]
+    pub id: Option<i64>,
     pub name: String,
     pub path: String,
     pub collection_id: Option<i64>,
