@@ -187,7 +187,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                 db.upsert_medias(medias.iter().map(|m| {
                     debug!("Updating media<{}>", m.title);
                     media::MediaModel {
-                        id: m.id,
+                        aid: m.id,
                         bv_id: m.bv_id.to_owned(),
                         title: m.title.to_owned(),
                         r#type: m.r#type.to_string(),
@@ -254,7 +254,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                 db.upsert_medias(medias.iter().map(|m| {
                     debug!("Updating media<{}>", m.title);
                     media::MediaModel {
-                        id: m.id,
+                        aid: m.id,
                         bv_id: m.bv_id.to_owned(),
                         title: m.title.to_owned(),
                         r#type: m.r#type.to_string(),
@@ -280,10 +280,10 @@ pub async fn fetch(prune: bool) -> Result<()> {
         let mut tasks = futures::stream::iter(
             medias
                 .into_iter()
-                .filter(|media| !fetched_medias.contains(&media.id)),
+                .filter(|media| !fetched_medias.contains(&media.aid)),
         )
         .map(|media| async move {
-            match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
+            match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
                 MediaInfoResp {
                     data: Some(MediaInfoData { owner, staff, .. }),
                     code: 0,
@@ -295,7 +295,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                 } => Err(anyhow!(
                     "Info unreachable media<{} {}>: {}",
                     media.title,
-                    media.id,
+                    media.aid,
                     option_msg.unwrap_or_default()
                 )),
             }
@@ -333,14 +333,14 @@ pub async fn fetch(prune: bool) -> Result<()> {
             db.upsert_media_ups(media_ups.iter().map(|(media, up)| {
                 debug!("Linking media<{}> and up<{}>", media.title, up.name);
                 up_media::UpMediaModel {
-                    id: media.id,
+                    id: media.aid,
                     up_id: up.mid,
                 }
             }))
             .await?;
         }
         for (media, _) in media_ups.into_iter() {
-            fetched_medias.insert(media.id);
+            fetched_medias.insert(media.aid);
         }
     }
     if prune {

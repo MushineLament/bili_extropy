@@ -11,7 +11,7 @@ impl Db {
         media::MediaEntity::insert_many(medias.into_iter().map(|m| m.into_active_model()))
             .on_conflict(
                 OnConflict::column(media::Column::BvId)
-                    .update_columns([media::Column::Title, media::Column::Id, media::Column::Type])
+                    .update_columns([media::Column::Title, media::Column::Aid, media::Column::Type])
                     .to_owned(),
             )
             .exec_without_returning(&self.db)

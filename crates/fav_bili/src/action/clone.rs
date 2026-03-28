@@ -55,7 +55,7 @@ pub async fn only_download(bvid: &String) -> Result<()> {
     let bars = bars.clone();
 
     let media = media::MediaModel {
-        id: m.id,
+        aid: m.id,
         bv_id: m.bv_id.to_owned(),
         title: m.title.to_owned(),
         r#type: m.r#type.to_string(),
@@ -74,7 +74,9 @@ pub async fn only_download(bvid: &String) -> Result<()> {
             fs::create_dir(&file)?;
         }
 
-        db.upsert_medias([media.clone()]).await?;
+        db.upsert_medias([media.clone()])
+            .await
+            .context("can't not upsert media in to table")?;
 
         download(db, &media, bars.clone(), &file).await?;
     }
@@ -88,7 +90,7 @@ pub async fn download(
     bars: MultiProgress,
     path: &Path,
 ) -> Result<()> {
-    match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
+    match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),
             code: 0,
@@ -97,16 +99,16 @@ pub async fn download(
             let only1p = pages.len() == 1;
             for Page { cid, page, part } in pages {
                 let filename = if only1p {
-                    format!("{}-{}", media.id, media.title)
+                    format!("{}-{}", media.aid, media.title)
                 } else {
-                    format!("{}-{}({page})-{part}", media.id, media.title)
+                    format!("{}-{}({page})-{part}", media.aid, media.title)
                 };
                 let DashResp {
                     data:
                         DashData {
                             dash: Dash { video, audio },
                         },
-                } = BiliApi::request(DashPayload::new(media.id, cid).await?).await?;
+                } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
 
                 let mut video = video.into_iter();
                 let mut audio = audio.into_iter();
@@ -280,7 +282,7 @@ pub async fn download(
                     break;
                 }
             }
-            db.set_media_state(media.id, MediaState::Completed).await?;
+            db.set_media_state(media.aid, MediaState::Completed).await?;
             Ok(())
         }
         MediaInfoResp {
@@ -289,7 +291,7 @@ pub async fn download(
             ..
         } => {
             db.set_media_state(
-                media.id,
+                media.aid,
                 match code {
                     -403 | 62012 | 62002 => MediaState::PermissionDenied,
                     _ => MediaState::Expired,
@@ -298,7 +300,7 @@ pub async fn download(
             .await?;
             Err(anyhow!(
                 "Info unreachable media<{}-{}>: {}",
-                media.id,
+                media.aid,
                 media.title,
                 option_msg.unwrap_or_default()
             ))

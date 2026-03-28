@@ -15,8 +15,14 @@ impl Db {
     ) -> Result<()> {
         media::MediaEntity::insert_many(medias.into_iter().map(|m| m.into_active_model()))
             .on_conflict(
-                OnConflict::column(media::Column::BvId)
-                    .update_columns([media::Column::Title, media::Column::Id, media::Column::Type])
+                OnConflict::column(media::Column::Aid)
+                    .update_columns([
+                        media::Column::BvId,
+                        media::Column::Cid,
+                        media::Column::Title,
+                        media::Column::Type,
+                        media::Column::State,
+                    ])
                     .to_owned(),
             )
             .exec_without_returning(&self.db)
@@ -26,7 +32,7 @@ impl Db {
 
     pub async fn set_media_state(&self, id: i64, state: MediaState) -> Result<()> {
         media::MediaEntity::update(media::ActiveModel {
-            id: Unchanged(id),
+            aid: Unchanged(id),
             state: Set(state.to_string()),
             ..Default::default()
         })

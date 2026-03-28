@@ -60,7 +60,7 @@ impl RelationTrait for Relation {
         match self {
             Self::Media => UpMediaEntity::belongs_to(super::media::MediaEntity)
                 .from(Column::Id)
-                .to(super::media::Column::Id)
+                .to(super::media::Column::Aid)
                 .into(),
             Self::Up => UpMediaEntity::belongs_to(super::up::Entity)
                 .from(Column::UpId)

@@ -16,7 +16,7 @@ impl EntityName for MediaEntity {
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct MediaModel {
-    pub id: i64,
+    pub aid: i64,
     pub bv_id: String,
     /// 视频up主的cid
     pub cid: i64,
@@ -27,7 +27,7 @@ pub struct MediaModel {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
-    Id,
+    Aid,
     BvId,
     Title,
     Cid,
@@ -37,7 +37,7 @@ pub enum Column {
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
-    Id,
+    Aid,
 }
 
 impl PrimaryKeyTrait for PrimaryKey {
@@ -57,8 +57,8 @@ impl ColumnTrait for Column {
     type EntityName = MediaEntity;
     fn def(&self) -> ColumnDef {
         match self {
-            Self::Id => ColumnType::BigInteger.def(),
-            Self::BvId => ColumnType::String(StringLen::None).def().unique(),
+            Self::Aid => ColumnType::BigInteger.def().unique(),
+            Self::BvId => ColumnType::String(StringLen::None).def(),
             Self::Title => ColumnType::String(StringLen::None).def(),
             Self::Type => ColumnType::custom("enum_text").def(),
             Self::State => ColumnType::custom("enum_text").def(),

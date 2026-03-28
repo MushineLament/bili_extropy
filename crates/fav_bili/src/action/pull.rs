@@ -46,7 +46,7 @@ pub async fn pull() -> Result<()> {
         let mut tasks = futures::stream::iter(
             medias
                 .iter()
-                .filter(|media| !pulled_medias.contains(&media.id)),
+                .filter(|media| !pulled_medias.contains(&media.aid)),
         )
         .map(|media| {
             let token = token.clone();
@@ -56,7 +56,7 @@ pub async fn pull() -> Result<()> {
             async move {
                 tokio::select! {
                     res = download(media, db, bars), if !token.is_cancelled() => match res {
-                        Ok(_) => { pulled_medias.insert(media.id); }
+                        Ok(_) => { pulled_medias.insert(media.aid); }
                         Err(e) => error!("{}", e),
                     },
                     _ = token.cancelled() => {},
@@ -85,7 +85,7 @@ pub async fn pull() -> Result<()> {
 }
 
 async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Result<()> {
-    match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
+    match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),
             code: 0,
@@ -94,16 +94,16 @@ async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Res
             let only1p = pages.len() == 1;
             for Page { cid, page, part } in pages {
                 let filename = if only1p {
-                    format!("{}-{}", media.id, media.title)
+                    format!("{}-{}", media.aid, media.title)
                 } else {
-                    format!("{}-{}({page})-{part}", media.id, media.title)
+                    format!("{}-{}({page})-{part}", media.aid, media.title)
                 };
                 let DashResp {
                     data:
                         DashData {
                             dash: Dash { video, audio },
                         },
-                } = BiliApi::request(DashPayload::new(media.id, cid).await?).await?;
+                } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
 
                 let mut video = video.into_iter();
                 let mut audio = audio.into_iter();
@@ -252,7 +252,7 @@ async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Res
                     break;
                 }
             }
-            db.set_media_state(media.id, MediaState::Completed).await?;
+            db.set_media_state(media.aid, MediaState::Completed).await?;
             Ok(())
         }
         MediaInfoResp {
@@ -261,7 +261,7 @@ async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Res
             ..
         } => {
             db.set_media_state(
-                media.id,
+                media.aid,
                 match code {
                     -403 | 62012 | 62002 => MediaState::PermissionDenied,
                     _ => MediaState::Expired,
@@ -270,7 +270,7 @@ async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Res
             .await?;
             Err(anyhow!(
                 "Info unreachable media<{}-{}>: {}",
-                media.id,
+                media.aid,
                 media.title,
                 option_msg.unwrap_or_default()
             ))

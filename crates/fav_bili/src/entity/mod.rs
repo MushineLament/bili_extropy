@@ -34,7 +34,7 @@ impl ToTableRecord<4> for collection::CollectionModel {
 impl ToTableRecord<5> for media::MediaModel {
     fn to_record(self) -> [String; 5] {
         [
-            self.id.to_string(),
+            self.aid.to_string(),
             self.bv_id,
             head(self.title, 20),
             self.r#type.to_string(),
