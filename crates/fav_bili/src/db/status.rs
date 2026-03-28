@@ -14,7 +14,6 @@ impl Db {
                     .update_columns([
                         status::Column::Name,
                         status::Column::Path,
-                        status::Column::CollectionId,
                         status::Column::State,
                     ])
                     .to_owned(),
@@ -26,16 +25,19 @@ impl Db {
 
     /// 获取激活的下载目录
     /// 当存在多个目录时，会
-    pub async fn get_active_status(&self) -> Result<StatusModel> {
+    pub async fn get_active_status(&self) -> Result<Vec<StatusModel>> {
         status::StatusEntity::find()
             .filter(status::Column::State.eq(SetState::Active))
-            .one(&self.db)
-            .await?
-            .context("Not or has many active active folder")
+            .all(&self.db)
+            .await
+            .context("get active folders error")
     }
 
     pub async fn all_status(&self) -> Result<Vec<StatusModel>> {
-        Ok(status::StatusEntity::find().all(&self.db).await?)
+        status::StatusEntity::find()
+            .all(&self.db)
+            .await
+            .context("get all status list error")
     }
 
     pub async fn get_status_by_id(&self, id: i64) -> Result<StatusModel> {
@@ -53,7 +55,7 @@ impl Db {
             .context("Not this Folder")
     }
 
-    pub async fn activate_status_by_id(&self, id: i64) -> Result<()> {
+    pub async fn activate_status_by_id(&self, id: i64) -> Result<StatusModel> {
         let active_model = status::ActiveModel {
             id: sea_orm::ActiveValue::Unchanged(Some(id)), // 主键不变
             state: sea_orm::ActiveValue::Set(SetState::Active.to_string()),
@@ -62,9 +64,8 @@ impl Db {
 
         status::StatusEntity::update(active_model)
             .exec(&self.db)
-            .await?;
-
-        Ok(())
+            .await
+            .context("Update status into Active error")
     }
 
     pub async fn deactivate_status_by_id(&self, id: i64) -> Result<()> {
@@ -79,18 +80,5 @@ impl Db {
             .await?;
 
         Ok(())
-    }
-
-    pub async fn set_status_collection(&self, id: i64, collection: i64) -> Result<StatusModel> {
-        let active_model = status::ActiveModel {
-            id: sea_orm::ActiveValue::Unchanged(Some(id)),
-            collection_id: sea_orm::ActiveValue::set(Some(collection)),
-            ..Default::default()
-        };
-
-        status::StatusEntity::update(active_model)
-            .exec(&self.db)
-            .await
-            .context(anyhow::anyhow!("Update status<{}> collection id error", id))
     }
 }

@@ -43,13 +43,10 @@ impl ToTableRecord<5> for media::MediaModel {
     }
 }
 
-impl ToTableRecord<5> for status::StatusModel {
-    fn to_record(self) -> [String; 5] {
+impl ToTableRecord<4> for status::StatusModel {
+    fn to_record(self) -> [String; 4] {
         [
             head(self.id.unwrap_or(-1).to_string(), 5),
-            self.collection_id
-                .map(|id| id.to_string())
-                .unwrap_or("NotRelated".to_string()),
             self.state,
             self.name,
             self.path,

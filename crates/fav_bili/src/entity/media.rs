@@ -18,6 +18,8 @@ impl EntityName for MediaEntity {
 pub struct MediaModel {
     pub id: i64,
     pub bv_id: String,
+    /// 视频up主的cid
+    pub cid: i64,
     pub title: String,
     pub r#type: String,
     pub state: String,
@@ -28,6 +30,7 @@ pub enum Column {
     Id,
     BvId,
     Title,
+    Cid,
     Type,
     State,
 }
@@ -59,6 +62,7 @@ impl ColumnTrait for Column {
             Self::Title => ColumnType::String(StringLen::None).def(),
             Self::Type => ColumnType::custom("enum_text").def(),
             Self::State => ColumnType::custom("enum_text").def(),
+            Self::Cid => ColumnType::BigInteger.def(),
         }
     }
 }

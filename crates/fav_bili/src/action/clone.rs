@@ -15,7 +15,7 @@ use tempfile::NamedTempFile;
 use crate::{
     api::BiliApi,
     cookies::{add_cookie_jar, parse_cookies},
-    db::db,
+    db::{Db, db},
     entity::{account, media},
     payload::{DashPayload, MediaInfoAidPayload, MediaInfoBvidPayload},
     response::{Dash, DashData, DashResp, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
@@ -60,24 +60,34 @@ pub async fn only_download(bvid: &String) -> Result<()> {
         title: m.title.to_owned(),
         r#type: m.r#type.to_string(),
         state: MediaState::Pending.to_string(),
+        cid: m.cid,
     };
 
-    let collection = db.get_active_status().await?;
+    let status = db.get_active_status().await?;
 
-    let path = Path::new(&collection.path);
+    for status in status {
+        let path = Path::new(&status.path);
 
-    let file = path.join(&collection.name);
+        let file = path.join(&status.name);
 
-    if !file.exists() {
-        fs::create_dir(&file)?;
+        if !file.exists() {
+            fs::create_dir(&file)?;
+        }
+
+        db.upsert_medias([media.clone()]).await?;
+
+        download(db, &media, bars.clone(), &file).await?;
     }
-
-    download(&media, bars, &file).await?;
 
     Ok(())
 }
 
-pub async fn download(media: &media::MediaModel, bars: MultiProgress, path: &Path) -> Result<()> {
+pub async fn download(
+    db: &Db,
+    media: &media::MediaModel,
+    bars: MultiProgress,
+    path: &Path,
+) -> Result<()> {
     match BiliApi::request(MediaInfoAidPayload { aid: media.id }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),
@@ -103,22 +113,31 @@ pub async fn download(media: &media::MediaModel, bars: MultiProgress, path: &Pat
                 loop {
                     match (video.next(), audio.next()) {
                         (Some(v), Some(a)) => {
-                            let mut resp_v = BiliApi::client().get(v.base_url).send().await?;
-                            let mut resp_a = BiliApi::client().get(a.base_url).send().await?;
+                            let mut resp_v =
+                                BiliApi::client().get(v.base_url.clone()).send().await?;
+                            let mut resp_a =
+                                BiliApi::client().get(a.base_url.clone()).send().await?;
+
                             let hv2u64 =
                                 |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
+
                             let size = hv2u64(&resp_v.headers()[CONTENT_LENGTH])
                                 + hv2u64(&resp_a.headers()[CONTENT_LENGTH]);
+
                             let pb = ProgressBar::new(size);
+
                             bars.add(pb.clone());
+
                             pb.set_message(head(&part, 10));
                             pb.set_style(
                                 ProgressStyle::with_template(BAR_TEMPLATE)
                                     .unwrap()
                                     .progress_chars("#>-"),
                             );
+
                             let mut file_v = NamedTempFile::new()?;
                             let mut file_a = NamedTempFile::new()?;
+
                             let (mut finished_v, mut finished_a) = (false, false);
                             loop {
                                 tokio::select! {
@@ -152,10 +171,19 @@ pub async fn download(media: &media::MediaModel, bars: MultiProgress, path: &Pat
                                 }
                             }
                             pb.finish();
+
                             let title = format!(
                                 "{filename}.mp4",
                                 filename = sanitize_filename::sanitize(&filename)
                             );
+
+                            // 下载到临时文件 file_v, file_a 后
+                            let video_path = path.join(format!("1_video.mp4"));
+                            let audio_path = path.join(format!("1_audio.m4a"));
+
+                            // 用 copy 将临时文件复制到目标路径
+                            std::fs::copy(file_v.path(), &video_path)?;
+                            std::fs::copy(file_a.path(), &audio_path)?;
 
                             let output_path = path.join(title);
 
@@ -252,16 +280,28 @@ pub async fn download(media: &media::MediaModel, bars: MultiProgress, path: &Pat
                     break;
                 }
             }
+            db.set_media_state(media.id, MediaState::Completed).await?;
             Ok(())
         }
         MediaInfoResp {
+            code,
             message: option_msg,
             ..
-        } => Err(anyhow!(
-            "Info unreachable media<{}-{}>: {}",
-            media.id,
-            media.title,
-            option_msg.unwrap_or_default()
-        )),
+        } => {
+            db.set_media_state(
+                media.id,
+                match code {
+                    -403 | 62012 | 62002 => MediaState::PermissionDenied,
+                    _ => MediaState::Expired,
+                },
+            )
+            .await?;
+            Err(anyhow!(
+                "Info unreachable media<{}-{}>: {}",
+                media.id,
+                media.title,
+                option_msg.unwrap_or_default()
+            ))
+        }
     }
 }

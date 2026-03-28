@@ -207,11 +207,6 @@ impl FavCommand {
                                     .long("switch")
                                     .short('a')
                                     .action(ArgAction::SetTrue),
-                                Arg::new("collection")  // 新增
-                                    .help("Collection ID to associate with the folder")
-                                    .long("collection")
-                                    .value_parser(value_parser!(i64))
-                                    .action(ArgAction::Set)
                             ])
                     ),
                     Command::new("fetch")
@@ -407,9 +402,8 @@ impl FavCommand {
                                 .context("Not folder path")?;
 
                             let active = sub_matches.get_flag("switch");
-                            let collection_id = sub_matches.get_one::<i64>("collection").copied();
 
-                            status_set(name, path, active, collection_id).await?;
+                            status_set(name, path, active).await?;
                         }
                         _ => status().await?,
                     },
@@ -418,11 +412,11 @@ impl FavCommand {
                     }
                     Some(("pull", _)) => pull().await?,
                     Some(("clone", sub_matches)) => {
-                        for bvid in sub_matches.get_many::<String>("bv_id").unwrap() {
-                            only_download(bvid)
-                                .await
-                                .context("Single Media Clone Failed")
-                                .unwrap();
+                        for bvid in sub_matches
+                            .get_many::<String>("bv_id")
+                            .context("Not one active status folder")?
+                        {
+                            only_download(bvid).await?;
                         }
                     }
                     _ => unreachable!(),

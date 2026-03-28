@@ -20,7 +20,6 @@ pub struct StatusModel {
     pub id: Option<i64>,
     pub name: String,
     pub path: String,
-    pub collection_id: Option<i64>,
     pub state: String,
 }
 
@@ -29,7 +28,6 @@ pub enum Column {
     Id,
     Name,
     Path,
-    CollectionId,
     State,
 }
 
@@ -57,7 +55,6 @@ impl ColumnTrait for Column {
             Self::Id => ColumnType::TinyInteger.def(),
             Self::Name => ColumnType::String(StringLen::None).def(),
             Self::Path => ColumnType::String(StringLen::None).def(),
-            Self::CollectionId => ColumnType::BigInteger.def(),
             Self::State => ColumnType::custom("enum_text").def(),
         }
     }

@@ -37,6 +37,8 @@ pub struct Media {
     pub id: i64,
     #[serde(rename = "bvid")]
     pub bv_id: String,
+    /// 视频up主cid
+    pub cid : i64,
     pub title: String,
     #[serde(default)]
     pub r#type: MediaType,

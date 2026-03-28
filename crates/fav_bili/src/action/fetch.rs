@@ -14,7 +14,9 @@ use crate::{
     api::BiliApi,
     cookies::{add_cookie_jar, parse_cookies},
     db::db,
-    entity::{account, media, collection_media, up_media, collection, account_collection, up, up_account},
+    entity::{
+        account, account_collection, collection, collection_media, media, up, up_account, up_media,
+    },
     payload::{
         FollowingNumPayload, FollowingUpPayload, InSetPayload, InUpPayload, ListSetPayload,
         MediaInfoAidPayload, PublishNumPayload,
@@ -72,8 +74,11 @@ pub async fn fetch(prune: bool) -> Result<()> {
         }
 
         for set_id in old_set_ids {
-            db.delete_set_account(account_collection::AccountCollectionModel { set_id, account_id })
-                .await?;
+            db.delete_set_account(account_collection::AccountCollectionModel {
+                set_id,
+                account_id,
+            })
+            .await?;
             warn!("Unlinked account<{}> and set<{}>", account.name, set_id,);
         }
 
@@ -187,6 +192,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                         title: m.title.to_owned(),
                         r#type: m.r#type.to_string(),
                         state: MediaState::Pending.to_string(),
+                        cid: m.cid,
                     }
                 }))
                 .await?;
@@ -253,6 +259,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                         title: m.title.to_owned(),
                         r#type: m.r#type.to_string(),
                         state: MediaState::Pending.to_string(),
+                        cid: m.cid,
                     }
                 }))
                 .await?;
