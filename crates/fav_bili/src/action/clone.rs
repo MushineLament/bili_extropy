@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::Write as _,
+    io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
@@ -11,6 +11,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use reqwest::header::{CONTENT_LENGTH, HeaderValue};
 use sea_orm::ColumnTrait as _;
 use tempfile::NamedTempFile;
+use tracing::error;
 
 use crate::{
     api::BiliApi,
@@ -70,10 +71,6 @@ pub async fn only_download(bvid: &String) -> Result<()> {
 
         let file = path.join(&status.name);
 
-        if !file.exists() {
-            fs::create_dir(&file)?;
-        }
-
         db.upsert_medias([media.clone()])
             .await
             .context("can't not upsert media in to table")?;
@@ -90,6 +87,36 @@ pub async fn download(
     bars: MultiProgress,
     path: &Path,
 ) -> Result<()> {
+    let file = db
+        .get_active_status()
+        .await
+        .context("get active status error,when download by clone")?;
+
+    let folders = file
+        .iter()
+        .map(|model| Path::new(&model.path).join(&model.name))
+        .map(|path| {
+            if !path.exists() {
+                return fs::create_dir_all(&path).map(|_| path);
+            }
+
+            if !path.is_dir() {
+                return io::Result::Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "The path is not a directory",
+                ));
+            }
+
+            Ok(path)
+        })
+        .filter_map(|path| {
+            if let Err(err) = &path {
+                error!("get or create active status err:{:?}", err);
+            }
+            path.ok()
+        })
+        .collect::<Vec<_>>();
+
     match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),
@@ -115,10 +142,8 @@ pub async fn download(
                 loop {
                     match (video.next(), audio.next()) {
                         (Some(v), Some(a)) => {
-                            let mut resp_v =
-                                BiliApi::client().get(v.base_url.clone()).send().await?;
-                            let mut resp_a =
-                                BiliApi::client().get(a.base_url.clone()).send().await?;
+                            let resp_v = BiliApi::client().get(v.base_url.clone()).send().await?;
+                            let resp_a = BiliApi::client().get(a.base_url.clone()).send().await?;
 
                             let hv2u64 =
                                 |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
@@ -126,156 +151,77 @@ pub async fn download(
                             let size = hv2u64(&resp_v.headers()[CONTENT_LENGTH])
                                 + hv2u64(&resp_a.headers()[CONTENT_LENGTH]);
 
-                            let pb = ProgressBar::new(size);
+                            let pb = create_progress_bar(size, &bars, &part);
 
-                            bars.add(pb.clone());
+                            let file_v = NamedTempFile::new_in(path)
+                                .context("Can't not create video temp download file in directory 1")
+                                .unwrap();
+                            let file_a = NamedTempFile::new_in(path)
+                                .context("Can't not create audio temp download file in directory 1")
+                                .unwrap();
 
-                            pb.set_message(head(&part, 10));
-                            pb.set_style(
-                                ProgressStyle::with_template(BAR_TEMPLATE)
-                                    .unwrap()
-                                    .progress_chars("#>-"),
-                            );
-
-                            let mut file_v = NamedTempFile::new()?;
-                            let mut file_a = NamedTempFile::new()?;
-
-                            let (mut finished_v, mut finished_a) = (false, false);
-                            loop {
-                                tokio::select! {
-                                    res = resp_v.chunk(), if !finished_v => {
-                                        match res {
-                                            Ok(Some(chunk)) => {
-                                                file_v.write_all(&chunk)?;
-                                                file_v.flush()?;
-                                                pb.inc(chunk.len() as u64);
-                                            }
-                                            Ok(None) => finished_v = true,
-                                            Err(e) => return Err(anyhow!(
-                                                "Failed to download video {filename}: {e}"
-                                            ))
-                                        }
-                                    }
-                                    res = resp_a.chunk(), if !finished_a => {
-                                        match res {
-                                            Ok(Some(chunk)) => {
-                                                file_a.write_all(&chunk)?;
-                                                file_a.flush()?;
-                                                pb.inc(chunk.len() as u64);
-                                            }
-                                            Ok(None) => finished_a = true,
-                                            Err(e) => return Err(anyhow!(
-                                                "Failed to download audio {filename}: {e}"
-                                            ))
-                                        }
-                                    }
-                                    else => break,
-                                }
-                            }
-                            pb.finish();
-
-                            let title = format!(
-                                "{filename}.mp4",
-                                filename = sanitize_filename::sanitize(&filename)
-                            );
-
-                            // 下载到临时文件 file_v, file_a 后
-                            let video_path = path.join(format!("1_video.mp4"));
-                            let audio_path = path.join(format!("1_audio.m4a"));
-
-                            // 用 copy 将临时文件复制到目标路径
-                            std::fs::copy(file_v.path(), &video_path)?;
-                            std::fs::copy(file_a.path(), &audio_path)?;
-
-                            let output_path = path.join(title);
-
-                            let output_path = output_path
-                                .to_str()
-                                .context("get download folder path err")?;
-
-                            if (
-                                VFile::new(file_v.path().to_string_lossy()),
-                                AFile::new(file_a.path().to_string_lossy()),
+                            download_video_audio(
+                                media.aid,
+                                Some(&v),
+                                Some(&a),
+                                Some(&file_v),
+                                Some(&file_a),
+                                &pb,
                             )
-                                .simple_mux(VFile::new(&output_path))
-                                .is_err()
-                            {
-                                std::fs::remove_file(output_path).ok();
-                                continue;
-                            }
+                            .await
+                            .expect("处理下载视频的函数发生错误 1");
+
+                            into_folder(media, folders.iter(), Some(&file_v), Some(&file_a));
                         }
                         (Some(v), None) => {
-                            let mut resp_v = BiliApi::client().get(v.base_url).send().await?;
+                            let resp_v = BiliApi::client().get(v.base_url.clone()).send().await?;
                             let hv2u64 =
                                 |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
                             let size = hv2u64(&resp_v.headers()[CONTENT_LENGTH]);
-                            let pb = ProgressBar::new(size);
-                            bars.add(pb.clone());
-                            pb.set_message(head(part, 10));
-                            pb.set_style(
-                                ProgressStyle::with_template(BAR_TEMPLATE)
-                                    .unwrap()
-                                    .progress_chars("#>-"),
-                            );
-                            let mut file_v = NamedTempFile::new()?;
-                            loop {
-                                match resp_v.chunk().await {
-                                    Ok(Some(chunk)) => {
-                                        file_v.write_all(&chunk)?;
-                                        file_v.flush()?;
-                                        pb.inc(chunk.len() as u64);
-                                    }
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        return Err(anyhow!(
-                                            "Failed to download video {filename}: {e}"
-                                        ));
-                                    }
-                                }
-                            }
-                            pb.finish();
-                            let title = format!(
-                                "{filename}.mp4",
-                                filename = sanitize_filename::sanitize(&filename)
-                            );
 
-                            tokio::fs::rename(file_v.path(), format!("./{title}")).await?;
+                            let pb = create_progress_bar(size, &bars, &part);
+
+                            let file_v = NamedTempFile::new_in(path).context(
+                                "Can't not create video temp download file in directory 2",
+                            )?;
+
+                            download_video_audio(
+                                media.aid,
+                                Some(&v),
+                                None,
+                                Some(&file_v),
+                                None,
+                                &pb,
+                            )
+                            .await
+                            .expect("处理下载视频的函数发生错误 2");
+
+                            into_folder(media, folders.iter(), Some(&file_v), None);
                         }
                         (None, Some(a)) => {
-                            let mut resp_a = BiliApi::client().get(a.base_url).send().await?;
+                            let resp_a = BiliApi::client().get(a.base_url.clone()).send().await?;
                             let hv2u64 =
                                 |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
                             let size = hv2u64(&resp_a.headers()[CONTENT_LENGTH]);
-                            let pb = ProgressBar::new(size);
-                            bars.add(pb.clone());
-                            pb.set_message(head(part, 10));
-                            pb.set_style(
-                                ProgressStyle::with_template(BAR_TEMPLATE)
-                                    .unwrap()
-                                    .progress_chars("#>-"),
-                            );
-                            let mut file_a = NamedTempFile::new()?;
-                            loop {
-                                match resp_a.chunk().await {
-                                    Ok(Some(chunk)) => {
-                                        file_a.write_all(&chunk)?;
-                                        file_a.flush()?;
-                                        pb.inc(chunk.len() as u64);
-                                    }
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        return Err(anyhow!(
-                                            "Failed to download audio {filename}: {e}"
-                                        ));
-                                    }
-                                }
-                            }
-                            pb.finish();
-                            let title = format!(
-                                "{filename}.mp3",
-                                filename = sanitize_filename::sanitize(&filename)
-                            );
-                            tokio::fs::rename(file_a.path(), format!("./{title}")).await?;
+
+                            let pb = create_progress_bar(size, &bars, &part);
+
+                            let file_a = NamedTempFile::new_in(path).context(
+                                "Can't not create audio temp download file in directory 2",
+                            )?;
+
+                            download_video_audio(
+                                media.aid,
+                                None,
+                                Some(&a),
+                                None,
+                                Some(&file_a),
+                                &pb,
+                            )
+                            .await
+                            .expect("处理下载视频的函数发生错误 3");
+
+                            into_folder(media, folders.iter(), None, Some(&file_a));
                         }
                         (None, None) => return Err(anyhow!("No legal stream in {}", filename)),
                     }
@@ -304,6 +250,128 @@ pub async fn download(
                 media.title,
                 option_msg.unwrap_or_default()
             ))
+        }
+    }
+}
+
+fn create_progress_bar(size: u64, bars: &MultiProgress, part: &str) -> ProgressBar {
+    let pb = ProgressBar::new(size);
+
+    bars.add(pb.clone());
+
+    pb.set_message(head(&part, 10));
+    pb.set_style(
+        ProgressStyle::with_template(BAR_TEMPLATE)
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+    pb
+}
+
+async fn download_video_audio(
+    id: i64,
+    v: Option<&crate::response::Video>,
+    a: Option<&crate::response::Audio>,
+    mut file_v: Option<&NamedTempFile>,
+    mut file_a: Option<&NamedTempFile>,
+    pb: &ProgressBar,
+) -> Result<()> {
+    let mut resp_v = match v {
+        Some(v) => Some(BiliApi::client().get(v.base_url.clone()).send().await?),
+        _ => None,
+    };
+
+    let mut resp_a = match a {
+        Some(a) => Some(BiliApi::client().get(a.base_url.clone()).send().await?),
+        _ => None,
+    };
+
+    let (mut finished_v, mut finished_a) = (false, false);
+    loop {
+        tokio::select! {
+            res = async { resp_v.as_mut().unwrap().chunk().await }, if !finished_v && resp_v.is_some() && file_v.is_some() => {
+                match res {
+                    Ok(Some(chunk)) => {
+                        file_v.as_mut().unwrap().write_all(&chunk)?;
+                        file_v.as_mut().unwrap().flush()?;
+                        pb.inc(chunk.len() as u64);
+                    }
+                    Ok(None) => finished_v = true,
+                    Err(e) => return Err(anyhow!(
+                        "Failed to download video {id}: {e}"
+                    ))
+                }
+            }
+
+            res = async { resp_a.as_mut().unwrap().chunk().await }, if !finished_a && resp_a.is_some() && file_a.is_some() => {
+                match res {
+                    Ok(Some(chunk)) => {
+                        file_a.as_mut().unwrap().write_all(&chunk)?;
+                        file_a.as_mut().unwrap().flush()?;
+                        pb.inc(chunk.len() as u64);
+                    }
+                    Ok(None) => finished_a = true,
+                    Err(e) => return Err(anyhow!(
+                        "Failed to download audio {id}: {e}"
+                    ))
+                }
+            }
+
+            else => break,
+        }
+    }
+    pb.finish();
+
+    Ok(())
+}
+
+fn into_folder<'a>(
+    media: &media::MediaModel,
+    folders: impl Iterator<Item = &'a PathBuf>,
+    file_v: Option<&NamedTempFile>,
+    file_a: Option<&NamedTempFile>,
+) {
+    for folder in folders {
+        let aid_path = folder.join(media.aid.to_string());
+        let cid_path = aid_path.join(format!("c_{}", media.cid.to_string()));
+
+        // 80为清晰度，但考虑目前还没有支持清晰度的选定，暂定80
+        let cid_path = cid_path.join("80");
+
+        if !cid_path.exists()
+            && let Err(err) = fs::create_dir_all(&cid_path)
+        {
+            error!("create dir error, path:{:?}, err:{:?},", cid_path, err);
+            continue;
+        }
+
+        if !cid_path.is_dir() {
+            error!("not is a directory, path:{:?}", cid_path);
+        }
+
+        let video_path = cid_path.join(format!("video.m4s"));
+        let audio_path = cid_path.join(format!("audio.m4s"));
+
+        // 后期改为支持 文件hash检测一致性
+        // 如果不一致则丢出错误
+        if let Some(file_v) = file_v {
+            if !video_path.exists() {
+                if let Err(err) = std::fs::copy(file_v.path(), &video_path) {
+                    error!("Move download file error 1:{:?}", err);
+                }
+            } else {
+                error!("video path already exist:{:?}", video_path);
+            }
+        }
+
+        if let Some(file_a) = file_a {
+            if !audio_path.exists() {
+                if let Err(err) = std::fs::copy(file_a.path(), &audio_path) {
+                    error!("Move download file error 2:{:?}", err);
+                }
+            } else {
+                error!("audio path already exist:{:?}", video_path);
+            }
         }
     }
 }
