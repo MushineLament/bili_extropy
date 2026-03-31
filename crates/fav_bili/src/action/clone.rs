@@ -1,17 +1,17 @@
 use std::{
-    fs::{self, File},
+    fs::{self},
     io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow};
-use api_req::{ApiCaller as _, Payload};
-use avmux::{AFile, Mux as _, VFile};
+use api_req::ApiCaller as _;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use reqwest::header::{CONTENT_LENGTH, HeaderValue};
 use sea_orm::ColumnTrait as _;
 use tempfile::NamedTempFile;
 use tracing::error;
+use url::Url;
 
 use crate::{
     api::BiliApi,
@@ -54,27 +54,6 @@ pub async fn only_download(bvid: &String) -> Result<()> {
         )),
     };
 
-    let mut pic = reqwest::get(m.pic).await?;
-
-    let mut pic_file = NamedTempFile::new_in(".")
-        .context("Can't not create index temp download file in directory 1")
-        .unwrap();
-
-    loop {
-        match pic.chunk().await {
-            Ok(Some(chunk)) => {
-                pic_file.write_all(&chunk)?;
-                pic_file.flush()?;
-            }
-            Ok(None) => break,
-            Err(e) => {
-                return Err(anyhow!("Failed to pic: {e}"));
-            }
-        }
-    }
-
-    fs::copy(pic_file, "cover.jpg");
-
     let bars = bars.clone();
 
     let media = media::MediaModel {
@@ -97,13 +76,14 @@ pub async fn only_download(bvid: &String) -> Result<()> {
             .await
             .context("can't not upsert media in to table")?;
 
-        download(db, &media, bars.clone(), &file).await?;
+        download(&m, db, &media, bars.clone(), &file).await?;
     }
 
     Ok(())
 }
 
 pub async fn download(
+    response: &crate::response::Media,
     db: &Db,
     media: &media::MediaModel,
     bars: MultiProgress,
@@ -139,6 +119,13 @@ pub async fn download(
         })
         .collect::<Vec<_>>();
 
+    let icon_file =
+        NamedTempFile::new_in(path).context("can't not create icon download temp file")?;
+
+    download_file(response.pic.clone(), &icon_file)
+        .await
+        .context("can't not download icon")?;
+
     match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
         MediaInfoResp {
             data: Some(MediaInfoData { pages, .. }),
@@ -159,9 +146,6 @@ pub async fn download(
                         },
                     ..
                 } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
-
-                let test = DashPayload::new(media.aid, cid).await?;
-                println!("DashPayload:{:#?}", test);
 
                 let mut video = video.into_iter();
                 let mut audio = audio.into_iter();
@@ -203,20 +187,10 @@ pub async fn download(
                         .await
                         .expect("处理下载视频的函数发生错误 1");
 
-                        // panic!("刻意终止");
-
-                        video_audio_into_folder(
-                            media,
-                            folders.iter(),
-                            Some(&file_v),
-                            Some(&file_a),
-                            v.id,
-                        );
-
                         let (v_size, v_hex) = get_size_md5(&file_v)?;
                         let (a_size, a_hex) = get_size_md5(&file_a)?;
 
-                        let _ = upsert_index_temp(
+                        let _ = upsert_to_index_temp(
                             &file_index,
                             &IndexOuput {
                                 video: [IndexVideo {
@@ -256,7 +230,20 @@ pub async fn download(
                             },
                         );
 
-                        index_into_folder(media, folders.iter(), &file_index, v.id);
+                        file_into_folder(
+                            folders
+                                .iter()
+                                .map(|folder| folder.join(media.aid.to_string()))
+                                .map(|aid_foler| {
+                                    aid_foler.join(format!("c_{}", media.cid.to_string()))
+                                })
+                                .map(|up_cid| up_cid.join(v.id.to_string())),
+                            &[
+                                ("video.m4s", &file_v),
+                                ("audio.m4s", &file_a),
+                                ("index.json", &file_index),
+                            ],
+                        );
                     }
                     (Some(v), None) => {
                         let resp_v = BiliApi::client().get(v.base_url.clone()).send().await?;
@@ -269,11 +256,50 @@ pub async fn download(
                         let file_v = NamedTempFile::new_in(path)
                             .context("Can't not create video temp download file in directory 2")?;
 
+                        let file_index = NamedTempFile::new_in(path)
+                            .context("Can't not create index temp download file in directory 2")
+                            .unwrap();
+
                         download_video_audio(media.aid, Some(&v), None, Some(&file_v), None, &pb)
                             .await
                             .expect("处理下载视频的函数发生错误 2");
 
-                        video_audio_into_folder(media, folders.iter(), Some(&file_v), None, v.id);
+                        let (v_size, v_hex) = get_size_md5(&file_v)?;
+
+                        let _ = upsert_to_index_temp(
+                            &file_index,
+                            &IndexOuput {
+                                video: [IndexVideo {
+                                    id: v.id.clone(),
+                                    base_url: v.base_url.clone(),
+                                    backup_url: v.backup_url.clone(),
+                                    bandwidth: v.bandwidth,
+                                    codecid: v.codecid,
+                                    md5: v_hex,
+                                    size: v_size,
+                                    audio_id: 0,
+                                    no_rexcode: false,
+                                    frame_rate: v.frame_rate.clone(),
+                                    width: v.width,
+                                    height: v.height,
+                                    widevinePssh: "".to_string(),
+                                    bilidrmUri: "".to_string(),
+                                }]
+                                .to_vec(),
+                                audio: [].to_vec(),
+                            },
+                        );
+
+                        file_into_folder(
+                            folders
+                                .iter()
+                                .map(|folder| folder.join(media.aid.to_string()))
+                                .map(|aid_foler| {
+                                    aid_foler.join(format!("c_{}", media.cid.to_string()))
+                                })
+                                .map(|up_cid| up_cid.join(v.id.to_string())),
+                            &[("video.m4s", &file_v), ("index.json", &file_index)],
+                        );
                     }
                     (None, Some(a)) => {
                         let resp_a = BiliApi::client().get(a.base_url.clone()).send().await?;
@@ -286,11 +312,50 @@ pub async fn download(
                         let file_a = NamedTempFile::new_in(path)
                             .context("Can't not create audio temp download file in directory 2")?;
 
+                        let file_index = NamedTempFile::new_in(path)
+                            .context("Can't not create index temp download file in directory 2")
+                            .unwrap();
+
                         download_video_audio(media.aid, None, Some(&a), None, Some(&file_a), &pb)
                             .await
                             .expect("处理下载视频的函数发生错误 3");
 
-                        video_audio_into_folder(media, folders.iter(), None, Some(&file_a), 0);
+                        let (a_size, a_hex) = get_size_md5(&file_a)?;
+
+                        let _ = upsert_to_index_temp(
+                            &file_index,
+                            &IndexOuput {
+                                video: [].to_vec(),
+                                audio: [IndexAudio {
+                                    id: a.id,
+                                    base_url: a.base_url.clone(),
+                                    backup_url: a.backup_url.clone(),
+                                    bandwidth: a.bandwidth,
+                                    codecid: a.codecid,
+                                    md5: a_hex,
+                                    size: a_size,
+                                    audio_id: 0,
+                                    no_rexcode: false,
+                                    frame_rate: a.frame_rate.clone(),
+                                    width: a.width,
+                                    height: a.height,
+                                    widevinePssh: "".to_string(),
+                                    bilidrmUri: "".to_string(),
+                                }]
+                                .to_vec(),
+                            },
+                        );
+
+                        file_into_folder(
+                            folders
+                                .iter()
+                                .map(|folder| folder.join(media.aid.to_string()))
+                                .map(|aid_foler| {
+                                    aid_foler.join(format!("c_{}", media.cid.to_string()))
+                                })
+                                .map(|up_cid| up_cid.join(a.id.to_string())),
+                            &[("audio.m4s", &file_a), ("index.json", &file_index)],
+                        );
                     }
                     (None, None) => return Err(anyhow!("No legal stream in {}", filename)),
                 }
@@ -392,92 +457,38 @@ async fn download_video_audio(
     Ok(())
 }
 
-fn video_audio_into_folder<'a>(
-    media: &media::MediaModel,
-    folders: impl Iterator<Item = &'a PathBuf>,
-    file_v: Option<&NamedTempFile>,
-    file_a: Option<&NamedTempFile>,
-    clarity_id: i64,
+/// 后续计划，实现错误收集，以便支持自行处理
+/// 将 NamedTempFile 移动到指定目录下，并重命名指定文件名
+fn file_into_folder<'a>(
+    folders: impl IntoIterator<Item = PathBuf>,
+    iter: &[(&'a str, &'a NamedTempFile)],
 ) {
     for folder in folders {
-        let aid_path = folder.join(media.aid.to_string());
-        let cid_path = aid_path.join(format!("c_{}", media.cid.to_string()));
+        if !folder.exists() {
+            if let Err(err) = fs::create_dir_all(&folder) {
+                error!("folder:{:?},err:{:?}", folder, err);
+            };
+        }
 
-        // 80为清晰度，但考虑目前还没有支持清晰度的选定，暂定80
-        let cid_path = cid_path.join(clarity_id.to_string());
-
-        if !cid_path.exists()
-            && let Err(err) = fs::create_dir_all(&cid_path)
-        {
-            error!("create dir error, path:{:?}, err:{:?},", cid_path, err);
+        if !folder.is_dir() {
+            error!("path not is a directoy:{:?}", folder);
             continue;
         }
 
-        if !cid_path.is_dir() {
-            error!("not is a directory, path:{:?}", cid_path);
-        }
-
-        let video_path = cid_path.join(format!("video.m4s"));
-        let audio_path = cid_path.join(format!("audio.m4s"));
-
-        // 后期改为支持 文件hash检测一致性
-        // 如果不一致则丢出错误
-        if let Some(file_v) = file_v {
-            if !video_path.exists() {
-                if let Err(err) = std::fs::copy(file_v.path(), &video_path) {
-                    error!("Move download file error 1:{:?}", err);
-                }
-            } else {
-                error!("video path already exist:{:?}", video_path);
-            }
-        }
-
-        if let Some(file_a) = file_a {
-            if !audio_path.exists() {
-                if let Err(err) = std::fs::copy(file_a.path(), &audio_path) {
-                    error!("Move download file error 2:{:?}", err);
-                }
-            } else {
-                error!("audio path already exist:{:?}", video_path);
+        for (file_name, metadata) in iter {
+            if let Err(err) = fs::copy(metadata, folder.join(file_name)) {
+                error!(
+                    "file_name: {:?},path: {:?},err: {:?}",
+                    folder, file_name, err
+                );
             }
         }
     }
 }
 
-fn upsert_index_temp(file: &NamedTempFile, output: &IndexOuput) -> Result<()> {
+fn upsert_to_index_temp(file: &NamedTempFile, output: &IndexOuput) -> Result<()> {
     let writer = io::BufWriter::new(file);
     Ok(serde_json::to_writer_pretty(writer, &output).context("Can't upsert into index.json")?) // 使用 pretty 格式化输出
-}
-
-fn index_into_folder<'a>(
-    media: &media::MediaModel,
-    folders: impl Iterator<Item = &'a PathBuf>,
-    file_index: &NamedTempFile,
-    clarity_id: i64,
-) {
-    for folder in folders {
-        let aid_path = folder.join(media.aid.to_string());
-        let cid_path = aid_path.join(format!("c_{}", media.cid.to_string()));
-
-        let cid_path = cid_path.join(clarity_id.to_string());
-
-        if !cid_path.exists()
-            && let Err(err) = fs::create_dir_all(&cid_path)
-        {
-            error!("create dir error, path:{:?}, err:{:?},", cid_path, err);
-            continue;
-        }
-
-        let index_path = cid_path.join(format!("index.json"));
-
-        if !index_path.exists() {
-            if let Err(err) = std::fs::copy(file_index.path(), &index_path) {
-                error!("Move index file error 1:{:?}", err);
-            }
-        } else {
-            error!("index path already exist:{:?}", index_path);
-        }
-    }
 }
 
 fn get_size_md5(file: &NamedTempFile) -> Result<(u64, String)> {
@@ -504,4 +515,23 @@ fn get_size_md5(file: &NamedTempFile) -> Result<(u64, String)> {
     let hex_video = hex::encode(md5_video.as_ref());
 
     Ok((size, hex_video))
+}
+
+async fn download_file(url: Url, mut file: &NamedTempFile) -> Result<()> {
+    let mut pic = reqwest::get(url).await.context("url can't get")?;
+
+    loop {
+        match pic.chunk().await {
+            Ok(Some(chunk)) => {
+                file.write_all(&chunk)?;
+                file.flush()?;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return Err(anyhow!("Failed to pic: {e}"));
+            }
+        }
+    }
+
+    Ok(())
 }
