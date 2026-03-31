@@ -1,5 +1,6 @@
 use core::fmt;
 use serde::Deserialize;
+use url::Url;
 
 use super::Up;
 
@@ -38,10 +39,11 @@ pub struct Media {
     #[serde(rename = "bvid")]
     pub bv_id: String,
     /// 视频up主cid
-    pub cid : i64,
+    pub cid: i64,
     pub title: String,
     #[serde(default)]
     pub r#type: MediaType,
+    pub pic: Url,
 }
 
 #[derive(Debug, Default, Deserialize)]

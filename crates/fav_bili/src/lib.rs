@@ -10,3 +10,5 @@ mod state;
 mod table;
 mod version;
 mod wbi;
+
+mod normalization;
