@@ -126,264 +126,182 @@ pub async fn download(
         .await
         .context("can't not download icon")?;
 
-    match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
-        MediaInfoResp {
-            data: Some(MediaInfoData { pages, .. }),
-            code: 0,
+    let MediaInfoResp {
+        code,
+        data,
+        message,
+    } = BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await?;
+
+    let (
+        Some(MediaInfoData {
+            owner,
+            pages,
+            staff,
+        }),
+        0,
+    ) = (data, code)
+    else {
+        db.set_media_state(
+            media.aid,
+            match code {
+                -403 | 62012 | 62002 => MediaState::PermissionDenied,
+                _ => MediaState::Expired,
+            },
+        )
+        .await?;
+
+        return Err(anyhow!(
+            "Info unreachable media<{}-{}>: {}",
+            media.aid,
+            media.title,
+            message.unwrap_or_default()
+        ));
+    };
+
+    let only1p = pages.len() == 1;
+    for Page { cid, page, part } in pages {
+        let filename = if only1p {
+            format!("{}-{}", media.aid, media.title)
+        } else {
+            format!("{}-{}({page})-{part}", media.aid, media.title)
+        };
+        let DashResp {
+            data: DashData {
+                dash: Dash { video, audio },
+            },
             ..
-        } => {
-            let only1p = pages.len() == 1;
-            for Page { cid, page, part } in pages {
-                let filename = if only1p {
-                    format!("{}-{}", media.aid, media.title)
-                } else {
-                    format!("{}-{}({page})-{part}", media.aid, media.title)
-                };
-                let DashResp {
-                    data:
-                        DashData {
-                            dash: Dash { video, audio },
-                        },
-                    ..
-                } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
+        } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
 
-                let mut video = video.into_iter();
-                let mut audio = audio.into_iter();
+        let mut video = video.into_iter();
+        let mut audio = audio.into_iter();
 
-                // 目前仅支持下载按顺序的质量且为默认值，
-                // 后续将设定支持修改下载
-                match (video.next(), audio.next()) {
-                    (Some(v), Some(a)) => {
-                        let resp_v = BiliApi::client().get(v.base_url.clone()).send().await?;
-                        let resp_a = BiliApi::client().get(a.base_url.clone()).send().await?;
+        let (v, a) = (video.next(), audio.next());
 
-                        let hv2u64 =
-                            |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
-
-                        let size = hv2u64(&resp_v.headers()[CONTENT_LENGTH])
-                            + hv2u64(&resp_a.headers()[CONTENT_LENGTH]);
-
-                        let pb = create_progress_bar(size, &bars, &part);
-
-                        let file_v = NamedTempFile::new_in(path)
-                            .context("Can't not create video temp download file in directory 1")
-                            .unwrap();
-                        let file_a = NamedTempFile::new_in(path)
-                            .context("Can't not create audio temp download file in directory 1")
-                            .unwrap();
-
-                        let file_index = NamedTempFile::new_in(path)
-                            .context("Can't not create index temp download file in directory 1")
-                            .unwrap();
-
-                        download_video_audio(
-                            media.aid,
-                            Some(&v),
-                            Some(&a),
-                            Some(&file_v),
-                            Some(&file_a),
-                            &pb,
-                        )
-                        .await
-                        .expect("处理下载视频的函数发生错误 1");
-
-                        let (v_size, v_hex) = get_size_md5(&file_v)?;
-                        let (a_size, a_hex) = get_size_md5(&file_a)?;
-
-                        let _ = upsert_to_index_temp(
-                            &file_index,
-                            &IndexOuput {
-                                video: [IndexVideo {
-                                    id: v.id.clone(),
-                                    base_url: v.base_url.clone(),
-                                    backup_url: v.backup_url.clone(),
-                                    bandwidth: v.bandwidth,
-                                    codecid: v.codecid,
-                                    md5: v_hex,
-                                    size: v_size,
-                                    audio_id: a.id,
-                                    no_rexcode: false,
-                                    frame_rate: v.frame_rate.clone(),
-                                    width: v.width,
-                                    height: v.height,
-                                    widevinePssh: "".to_string(),
-                                    bilidrmUri: "".to_string(),
-                                }]
-                                .to_vec(),
-                                audio: [IndexAudio {
-                                    id: a.id,
-                                    base_url: a.base_url.clone(),
-                                    backup_url: a.backup_url.clone(),
-                                    bandwidth: a.bandwidth,
-                                    codecid: a.codecid,
-                                    md5: a_hex,
-                                    size: a_size,
-                                    audio_id: 0,
-                                    no_rexcode: false,
-                                    frame_rate: a.frame_rate.clone(),
-                                    width: a.width,
-                                    height: a.height,
-                                    widevinePssh: "".to_string(),
-                                    bilidrmUri: "".to_string(),
-                                }]
-                                .to_vec(),
-                            },
-                        );
-
-                        file_into_folder(
-                            folders
-                                .iter()
-                                .map(|folder| folder.join(media.aid.to_string()))
-                                .map(|aid_foler| {
-                                    aid_foler.join(format!("c_{}", media.cid.to_string()))
-                                })
-                                .map(|up_cid| up_cid.join(v.id.to_string())),
-                            &[
-                                ("video.m4s", &file_v),
-                                ("audio.m4s", &file_a),
-                                ("index.json", &file_index),
-                            ],
-                        );
-                    }
-                    (Some(v), None) => {
-                        let resp_v = BiliApi::client().get(v.base_url.clone()).send().await?;
-                        let hv2u64 =
-                            |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
-                        let size = hv2u64(&resp_v.headers()[CONTENT_LENGTH]);
-
-                        let pb = create_progress_bar(size, &bars, &part);
-
-                        let file_v = NamedTempFile::new_in(path)
-                            .context("Can't not create video temp download file in directory 2")?;
-
-                        let file_index = NamedTempFile::new_in(path)
-                            .context("Can't not create index temp download file in directory 2")
-                            .unwrap();
-
-                        download_video_audio(media.aid, Some(&v), None, Some(&file_v), None, &pb)
-                            .await
-                            .expect("处理下载视频的函数发生错误 2");
-
-                        let (v_size, v_hex) = get_size_md5(&file_v)?;
-
-                        let _ = upsert_to_index_temp(
-                            &file_index,
-                            &IndexOuput {
-                                video: [IndexVideo {
-                                    id: v.id.clone(),
-                                    base_url: v.base_url.clone(),
-                                    backup_url: v.backup_url.clone(),
-                                    bandwidth: v.bandwidth,
-                                    codecid: v.codecid,
-                                    md5: v_hex,
-                                    size: v_size,
-                                    audio_id: 0,
-                                    no_rexcode: false,
-                                    frame_rate: v.frame_rate.clone(),
-                                    width: v.width,
-                                    height: v.height,
-                                    widevinePssh: "".to_string(),
-                                    bilidrmUri: "".to_string(),
-                                }]
-                                .to_vec(),
-                                audio: [].to_vec(),
-                            },
-                        );
-
-                        file_into_folder(
-                            folders
-                                .iter()
-                                .map(|folder| folder.join(media.aid.to_string()))
-                                .map(|aid_foler| {
-                                    aid_foler.join(format!("c_{}", media.cid.to_string()))
-                                })
-                                .map(|up_cid| up_cid.join(v.id.to_string())),
-                            &[("video.m4s", &file_v), ("index.json", &file_index)],
-                        );
-                    }
-                    (None, Some(a)) => {
-                        let resp_a = BiliApi::client().get(a.base_url.clone()).send().await?;
-                        let hv2u64 =
-                            |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
-                        let size = hv2u64(&resp_a.headers()[CONTENT_LENGTH]);
-
-                        let pb = create_progress_bar(size, &bars, &part);
-
-                        let file_a = NamedTempFile::new_in(path)
-                            .context("Can't not create audio temp download file in directory 2")?;
-
-                        let file_index = NamedTempFile::new_in(path)
-                            .context("Can't not create index temp download file in directory 2")
-                            .unwrap();
-
-                        download_video_audio(media.aid, None, Some(&a), None, Some(&file_a), &pb)
-                            .await
-                            .expect("处理下载视频的函数发生错误 3");
-
-                        let (a_size, a_hex) = get_size_md5(&file_a)?;
-
-                        let _ = upsert_to_index_temp(
-                            &file_index,
-                            &IndexOuput {
-                                video: [].to_vec(),
-                                audio: [IndexAudio {
-                                    id: a.id,
-                                    base_url: a.base_url.clone(),
-                                    backup_url: a.backup_url.clone(),
-                                    bandwidth: a.bandwidth,
-                                    codecid: a.codecid,
-                                    md5: a_hex,
-                                    size: a_size,
-                                    audio_id: 0,
-                                    no_rexcode: false,
-                                    frame_rate: a.frame_rate.clone(),
-                                    width: a.width,
-                                    height: a.height,
-                                    widevinePssh: "".to_string(),
-                                    bilidrmUri: "".to_string(),
-                                }]
-                                .to_vec(),
-                            },
-                        );
-
-                        file_into_folder(
-                            folders
-                                .iter()
-                                .map(|folder| folder.join(media.aid.to_string()))
-                                .map(|aid_foler| {
-                                    aid_foler.join(format!("c_{}", media.cid.to_string()))
-                                })
-                                .map(|up_cid| up_cid.join(a.id.to_string())),
-                            &[("audio.m4s", &file_a), ("index.json", &file_index)],
-                        );
-                    }
-                    (None, None) => return Err(anyhow!("No legal stream in {}", filename)),
-                }
-            }
-            db.set_media_state(media.aid, MediaState::Completed).await?;
-            Ok(())
+        if v.is_none() && a.is_none() {
+            continue;
         }
-        MediaInfoResp {
-            code,
-            message: option_msg,
-            ..
-        } => {
-            db.set_media_state(
-                media.aid,
-                match code {
-                    -403 | 62012 | 62002 => MediaState::PermissionDenied,
-                    _ => MediaState::Expired,
-                },
-            )
-            .await?;
-            Err(anyhow!(
-                "Info unreachable media<{}-{}>: {}",
-                media.aid,
-                media.title,
-                option_msg.unwrap_or_default()
-            ))
-        }
+
+        let resp_v = match v.as_ref() {
+            Some(v) => Some(BiliApi::client().get(v.base_url.clone()).send().await),
+            _ => None,
+        };
+
+        let resp_a = match a.as_ref() {
+            Some(a) => Some(BiliApi::client().get(a.base_url.clone()).send().await),
+            _ => None,
+        };
+
+        let hv2u64 = |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
+
+        let size = match resp_v.as_ref() {
+            Some(v) => v
+                .as_ref()
+                .map(|v| hv2u64(&v.headers()[CONTENT_LENGTH]))
+                .unwrap_or_default(),
+            None => 0,
+        } + match resp_a.as_ref() {
+            Some(a) => a
+                .as_ref()
+                .map(|a| hv2u64(&a.headers()[CONTENT_LENGTH]))
+                .unwrap_or_default(),
+            None => 0,
+        };
+
+        let pb = create_progress_bar(size, &bars, &part);
+
+        let file_v = resp_v.is_some().then_some(
+            NamedTempFile::new_in(path)
+                .context("Can't not create video temp download file in directory 1")?,
+        );
+
+        let file_a = resp_a.is_some().then_some(
+            NamedTempFile::new_in(path)
+                .context("Can't not create audio temp download file in directory 1")?,
+        );
+
+        let file_index = NamedTempFile::new_in(path)
+            .context("Can't not create index temp download file in directory 1")?;
+
+        download_video_audio(
+            media.aid,
+            v.as_ref(),
+            a.as_ref(),
+            file_v.as_ref(),
+            file_a.as_ref(),
+            &pb,
+        )
+        .await
+        .expect("处理下载视频的函数发生错误 1");
+
+        let mut index = IndexOuput::default();
+
+        let audio_id = if let Some(a) = a
+            && let Some(file_a) = file_a.as_ref()
+        {
+            let (a_size, a_hex) = get_size_md5(file_a)?;
+            index.audio.push(IndexAudio {
+                id: a.id,
+                base_url: a.base_url.clone(),
+                backup_url: a.backup_url.clone(),
+                bandwidth: a.bandwidth,
+                codecid: a.codecid,
+                md5: a_hex,
+                size: a_size,
+                audio_id: 0,
+                no_rexcode: false,
+                frame_rate: a.frame_rate.clone(),
+                width: a.width,
+                height: a.height,
+                widevinePssh: "".to_string(),
+                bilidrmUri: "".to_string(),
+            });
+            a.id
+        } else {
+            0
+        };
+
+        let v_id = if let Some(v) = v
+            && let Some(file_v) = file_v.as_ref()
+        {
+            let (v_size, v_hex) = get_size_md5(&file_v)?;
+            index.video.push(IndexVideo {
+                id: v.id.clone(),
+                base_url: v.base_url.clone(),
+                backup_url: v.backup_url.clone(),
+                bandwidth: v.bandwidth,
+                codecid: v.codecid,
+                md5: v_hex,
+                size: v_size,
+                audio_id: audio_id,
+                no_rexcode: false,
+                frame_rate: v.frame_rate.clone(),
+                width: v.width,
+                height: v.height,
+                widevinePssh: "".to_string(),
+                bilidrmUri: "".to_string(),
+            });
+            v.id
+        } else {
+            0
+        };
+
+        let _ = upsert_to_index_temp(&file_index, &index);
+
+        file_into_folder(
+            folders
+                .iter()
+                .map(|folder| folder.join(media.aid.to_string()))
+                .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string())))
+                .map(|up_cid| up_cid.join(v_id.to_string())),
+            &[
+                ("video.m4s", file_v.as_ref()),
+                ("audio.m4s", file_a.as_ref()),
+                ("index.json", Some(&file_index)),
+            ],
+        );
     }
+    db.set_media_state(media.aid, MediaState::Completed).await?;
+    Ok(())
 }
 
 fn create_progress_bar(size: u64, bars: &MultiProgress, part: &str) -> ProgressBar {
@@ -461,7 +379,7 @@ async fn download_video_audio(
 /// 将 NamedTempFile 移动到指定目录下，并重命名指定文件名
 fn file_into_folder<'a>(
     folders: impl IntoIterator<Item = PathBuf>,
-    iter: &[(&'a str, &'a NamedTempFile)],
+    iter: &[(&'a str, Option<&'a NamedTempFile>)],
 ) {
     for folder in folders {
         if !folder.exists() {
@@ -476,6 +394,9 @@ fn file_into_folder<'a>(
         }
 
         for (file_name, metadata) in iter {
+            let Some(metadata) = metadata else {
+                continue;
+            };
             if let Err(err) = fs::copy(metadata, folder.join(file_name)) {
                 error!(
                     "file_name: {:?},path: {:?},err: {:?}",
