@@ -102,6 +102,7 @@ async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Res
                     data:
                         DashData {
                             dash: Dash { video, audio },
+                            ..
                         },
                     ..
                 } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;

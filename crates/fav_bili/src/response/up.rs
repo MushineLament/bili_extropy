@@ -1,10 +1,12 @@
 use serde::Deserialize;
+use url::Url;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Up {
     pub mid: i64,
     #[serde(alias = "uname")]
     pub name: String,
+    pub face: Url,
 }
 
 #[derive(Debug, Deserialize)]

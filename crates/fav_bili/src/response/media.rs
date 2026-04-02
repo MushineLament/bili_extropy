@@ -23,6 +23,7 @@ pub struct MediaInfoData {
     pub owner: Up,
     pub pages: Vec<Page>,
     pub staff: Option<Vec<Up>>,
+    pub cid: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,7 +47,7 @@ pub struct Media {
     pub pic: Url,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[repr(u8)]
 #[serde(from = "u8")]
 pub enum MediaType {

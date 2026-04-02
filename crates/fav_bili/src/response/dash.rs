@@ -9,6 +9,7 @@ pub struct DashResp {
 #[derive(Debug, Deserialize)]
 pub struct DashData {
     pub dash: Dash,
+    pub timelength: i64,
 }
 
 #[derive(Debug, Deserialize)]

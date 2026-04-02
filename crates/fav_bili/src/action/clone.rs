@@ -1,11 +1,12 @@
 use std::{
+    ffi,
     fs::{self},
     io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow};
-use api_req::ApiCaller as _;
+use api_req::{ApiCaller as _, Payload};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use reqwest::header::{CONTENT_LENGTH, HeaderValue};
 use sea_orm::ColumnTrait as _;
@@ -18,7 +19,7 @@ use crate::{
     cookies::{add_cookie_jar, parse_cookies},
     db::{Db, db},
     entity::{account, media},
-    normalization::{IndexAudio, IndexOuput, IndexVideo},
+    normalization::{EntryOuput, EntryPageData, IndexAudio, IndexOuput, IndexVideo},
     payload::{DashPayload, MediaInfoAidPayload, MediaInfoBvidPayload},
     response::{Dash, DashData, DashResp, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
     state::{AccountState, MediaState},
@@ -126,6 +127,14 @@ pub async fn download(
         .await
         .context("can't not download icon")?;
 
+    file_into_folder(
+        folders
+            .iter()
+            .map(|folder| folder.join(media.aid.to_string()))
+            .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string()))),
+        &[("cover.jpg", Some(&icon_file))],
+    );
+
     let MediaInfoResp {
         code,
         data,
@@ -137,6 +146,7 @@ pub async fn download(
             owner,
             pages,
             staff,
+            cid: media_cid,
         }),
         0,
     ) = (data, code)
@@ -166,9 +176,11 @@ pub async fn download(
             format!("{}-{}({page})-{part}", media.aid, media.title)
         };
         let DashResp {
-            data: DashData {
-                dash: Dash { video, audio },
-            },
+            data:
+                DashData {
+                    dash: Dash { video, audio },
+                    timelength,
+                },
             ..
         } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
 
@@ -222,6 +234,50 @@ pub async fn download(
         let file_index = NamedTempFile::new_in(path)
             .context("Can't not create index temp download file in directory 1")?;
 
+        let mut file_danmu = NamedTempFile::new_in(path)
+            .context("Can't create danmu temp download file in directory")?;
+
+        let mut file_danmu_xml = NamedTempFile::new_in(path)
+            .context("Can't create danmu temp download file in directory")?;
+
+        let mut file_entry = NamedTempFile::new_in(path)
+            .context("Can't create entry temp download file in directory")?;
+
+        let system_now = std::time::SystemTime::now();
+        let duration_file_create = system_now
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间早于纪元");
+
+        let client = BiliApi::client();
+
+        let danmu_url = format!(
+            "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid={}&segment_index=1",
+            media.cid
+        );
+
+        let mut danmu_response = client.get(&danmu_url).send().await?;
+
+        while let Some(chunk) = danmu_response.chunk().await? {
+            file_danmu.write_all(&chunk)?;
+            file_danmu.flush()?;
+        }
+
+        let client = BiliApi::client();
+
+        let xml_url = format!("https://api.bilibili.com/x/v1/dm/list.so?oid={}", media.cid);
+        let xml_response = client.get(&xml_url).send().await?;
+
+        // 获取响应体字节
+        let bytes = xml_response.bytes().await?;
+
+        // 解压 deflate 数据
+        let mut decoder = flate2::bufread::DeflateDecoder::new(&bytes[..]);
+        let mut decompressed = Vec::new();
+        use std::io::Read;
+        decoder.read_to_end(&mut decompressed)?;
+
+        file_danmu_xml.write_all(&decompressed)?;
+
         download_video_audio(
             media.aid,
             v.as_ref(),
@@ -232,6 +288,10 @@ pub async fn download(
         )
         .await
         .expect("处理下载视频的函数发生错误 1");
+
+        let duration_file_update = system_now
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间早于纪元");
 
         let mut index = IndexOuput::default();
 
@@ -260,7 +320,7 @@ pub async fn download(
             0
         };
 
-        let v_id = if let Some(v) = v
+        let v_id = if let Some(v) = v.as_ref()
             && let Some(file_v) = file_v.as_ref()
         {
             let (v_size, v_hex) = get_size_md5(&file_v)?;
@@ -285,8 +345,101 @@ pub async fn download(
             0
         };
 
-        let _ = upsert_to_index_temp(&file_index, &index);
+        let index_writer = io::BufWriter::new(&file_index);
+        serde_json::to_writer_pretty(index_writer, &index)
+            .context("Can't upsert into index.json")?; // 使用 pretty 格式化输出;
 
+        let entry = EntryOuput {
+            media_type: response.r#type.clone() as i64,
+            has_dash_audio: audio_id != 0,
+            is_completed: true,
+            total_bytes: file_a
+                .as_ref()
+                .and_then(|a| a.as_file().metadata().ok())
+                .map(|a| a.len())
+                .unwrap_or_default()
+                + file_v
+                    .as_ref()
+                    .and_then(|v| v.as_file().metadata().ok())
+                    .map(|v| v.len())
+                    .unwrap_or_default(),
+            downloaded_bytes: file_a
+                .as_ref()
+                .and_then(|a| a.as_file().metadata().ok())
+                .map(|a| a.len())
+                .unwrap_or_default()
+                + file_v
+                    .as_ref()
+                    .and_then(|v| v.as_file().metadata().ok())
+                    .map(|v| v.len())
+                    .unwrap_or_default(),
+            title: media.title.clone(),
+            type_tag: v_id.to_string(),
+            cover: response.pic.clone(),
+            video_quality: v_id,
+            prefered_video_quality: v_id,
+            guessed_total_bytes: 0,
+            total_time_milli: timelength,
+            //https://github.com/ILoveScratch2/bilibili-api-collect-new/blob/main/docs/danmaku/danmaku_view_proto.md
+            danmaku_count: -1,
+            time_update_stamp: duration_file_create.as_millis(),
+            time_create_stamp: duration_file_update.as_millis(),
+            can_play_in_advance: true,
+            interrupt_transform_temp_file: false,
+            quality_pithy_description: match v_id {
+                80 => "1080P",
+                _ => unreachable!("未定义的视频清晰度"),
+            }
+            .to_string(),
+            quality_superscript: "".to_owned(),
+            variable_resolution_ratio: false,
+            cache_version_code: -1,
+            preferred_audio_quality: 0,
+            audio_quality: 0,
+            avid: media.aid,
+            spid: 0,
+            season_id: 0,
+            bvid: "".to_string(),
+            owner_id: owner.mid,
+            owner_name: owner.name.clone(),
+            is_charge_video: false,
+            verification_code: 0,
+            page_data: EntryPageData {
+                cid,
+                page,
+                from: "vupload".to_string(),
+                part:media.title.clone(),
+                link: format!("bilibili://video/{}?cid={}", media.aid, media_cid),
+                rich_vid: "".to_owned(),
+                has_alias: false,
+                tid: 0,
+                width: v.as_ref().map(|v| v.width).unwrap_or_default(),
+                height: v.as_ref().map(|v| v.height).unwrap_or_default(),
+                rotate: 0,
+                download_title: "".to_owned(),
+                download_subtitle: "".to_owned(),
+            },
+            ep: None,
+        };
+
+        let entry_writer = io::BufWriter::new(&file_entry);
+        serde_json::to_writer_pretty(entry_writer, &entry)
+            .context("Can't upsert into index.json")?; // 使用 pretty 格式化输出;
+
+        // 视频id目录下
+        file_into_folder(
+            folders
+                .iter()
+                .map(|folder| folder.join(media.aid.to_string()))
+                .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string()))),
+            &[
+                ("danmaku.pb", Some(&file_danmu)),
+                ("danmaku.xml", Some(&file_danmu_xml)),
+                ("entry.json", Some(&file_entry)),
+            ],
+        );
+
+        // 视频清晰度目录下
         file_into_folder(
             folders
                 .iter()
@@ -405,11 +558,6 @@ fn file_into_folder<'a>(
             }
         }
     }
-}
-
-fn upsert_to_index_temp(file: &NamedTempFile, output: &IndexOuput) -> Result<()> {
-    let writer = io::BufWriter::new(file);
-    Ok(serde_json::to_writer_pretty(writer, &output).context("Can't upsert into index.json")?) // 使用 pretty 格式化输出
 }
 
 fn get_size_md5(file: &NamedTempFile) -> Result<(u64, String)> {

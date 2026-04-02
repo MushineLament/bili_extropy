@@ -47,8 +47,10 @@ tempfile = { version = "3.20" }
 avmux = { version = "0.2", default-features = false, features = ["link_system_ffmpeg", "ffmpeg8"] }
 sanitize-filename = { version = "0.6" }
 paste = { version = "1.0" }
+flate2 = "1.0"
 
 migration ={ path = "../migration"}
+rsmpeg = { version = "0.18", features = ["ffmpeg8"] }
 
 [build-dependencies]
 vergen = { version = "9.0", features = ["rustc"] }
