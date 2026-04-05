@@ -63,7 +63,9 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::SetAccount => AccountEntity::has_many(super::account_collection::AccountCollectionEntity).into(),
+            Self::SetAccount => {
+                AccountEntity::has_many(super::account_collection::AccountCollectionEntity).into()
+            }
             Self::UpAccount => AccountEntity::has_many(super::up_account::Entity).into(),
         }
     }

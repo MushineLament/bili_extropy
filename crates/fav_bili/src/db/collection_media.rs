@@ -9,10 +9,12 @@ impl Db {
         &self,
         media_sets: impl IntoIterator<Item = collection_media::CollectionMediaModel>,
     ) -> Result<()> {
-        collection_media::CollectionMediaEntity::insert_many(media_sets.into_iter().map(|m| m.into_active_model()))
-            .on_conflict_do_nothing()
-            .exec_without_returning(&self.db)
-            .await?;
+        collection_media::CollectionMediaEntity::insert_many(
+            media_sets.into_iter().map(|m| m.into_active_model()),
+        )
+        .on_conflict_do_nothing()
+        .exec_without_returning(&self.db)
+        .await?;
         Ok(())
     }
 }

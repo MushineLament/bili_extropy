@@ -10,26 +10,26 @@ pub struct CollectionMediaEntity;
 
 impl EntityName for CollectionMediaEntity {
     fn table_name(&self) -> &str {
-        "media_set"
+        "collection_media"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct CollectionMediaModel {
     pub id: i64,
-    pub set_id: i64,
+    pub collection_id: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
     Id,
-    SetId,
+    CollectionId,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
     Id,
-    SetId,
+    CollectionId,
 }
 
 impl PrimaryKeyTrait for PrimaryKey {
@@ -50,7 +50,7 @@ impl ColumnTrait for Column {
     fn def(&self) -> ColumnDef {
         match self {
             Self::Id => ColumnType::BigInteger.def(),
-            Self::SetId => ColumnType::BigInteger.def(),
+            Self::CollectionId => ColumnType::BigInteger.def(),
         }
     }
 }
@@ -63,8 +63,8 @@ impl RelationTrait for Relation {
                 .to(super::media::Column::Aid)
                 .into(),
             Self::Set => CollectionMediaEntity::belongs_to(super::collection::CollectionEntity)
-                .from(Column::SetId)
-                .to(super::collection::Column::SetId)
+                .from(Column::CollectionId)
+                .to(super::collection::Column::CollectionId)
                 .into(),
         }
     }

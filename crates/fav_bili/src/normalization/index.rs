@@ -21,8 +21,8 @@ pub struct IndexVideo {
     pub frame_rate: String,
     pub width: i64,
     pub height: i64,
-    pub widevinePssh: String,
-    pub bilidrmUri: String,
+    pub widevine_pssh: String,
+    pub bilidrm_uri: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -39,6 +39,6 @@ pub struct IndexAudio {
     pub frame_rate: String,
     pub width: i64,
     pub height: i64,
-    pub widevinePssh: String,
-    pub bilidrmUri: String,
+    pub widevine_pssh: String,
+    pub bilidrm_uri: String,
 }

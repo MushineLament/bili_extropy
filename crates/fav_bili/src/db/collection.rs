@@ -10,10 +10,13 @@ use super::Db;
 use crate::{entity::collection, state::SetState};
 
 impl Db {
-    pub async fn upsert_sets(&self, sets: impl IntoIterator<Item = collection::CollectionModel>) -> Result<()> {
+    pub async fn upsert_collections(
+        &self,
+        sets: impl IntoIterator<Item = collection::CollectionModel>,
+    ) -> Result<()> {
         collection::CollectionEntity::insert_many(sets.into_iter().map(|s| s.into_active_model()))
             .on_conflict(
-                OnConflict::column(collection::Column::SetId)
+                OnConflict::column(collection::Column::CollectionId)
                     .update_columns([collection::Column::Name, collection::Column::Count])
                     .to_owned(),
             )
@@ -30,14 +33,17 @@ impl Db {
     }
 
     pub async fn all_sets(&self) -> Result<Vec<collection::CollectionModel>> {
-        collection::CollectionEntity::find().all(&self.db).await.map_err(Into::into)
+        collection::CollectionEntity::find()
+            .all(&self.db)
+            .await
+            .map_err(Into::into)
     }
 
     // 激活 收藏夹id
     /// 是如何获取收藏夹下的收藏id的？
-    pub async fn activate_set(&self, set_id: i64) -> Result<()> {
+    pub async fn activate_set(&self, collection_id: i64) -> Result<()> {
         collection::CollectionEntity::update(collection::ActiveModel {
-            set_id: Unchanged(set_id),
+            collection_id: Unchanged(collection_id),
             state: Set(SetState::Active.to_string()),
             ..Default::default()
         })
@@ -59,7 +65,7 @@ impl Db {
 
     pub async fn deactivate_set(&self, set_id: i64) -> Result<()> {
         collection::CollectionEntity::update(collection::ActiveModel {
-            set_id: Unchanged(set_id),
+            collection_id: Unchanged(set_id),
             state: Set(SetState::Inactive.to_string()),
             ..Default::default()
         })

@@ -29,7 +29,7 @@ pub async fn login() -> Result<()> {
         .light_color(unicode::Dense1x2::Dark)
         .build();
     println!("{image}");
-    
+
     loop {
         sleep(Duration::from_secs(3)).await;
         let QrPollResp {
@@ -50,13 +50,13 @@ pub async fn login() -> Result<()> {
             }
         }
     }
-    
+
     let cookies = current_cookies()?;
-    
+
     let WbiResp {
         data: WbiData { mid, uname, .. },
     } = BiliApi::request(WbiPayload).await?;
-    
+
     db.upsert_account(account::AccountModel {
         account_id: mid,
         name: uname.to_owned(),
@@ -64,9 +64,9 @@ pub async fn login() -> Result<()> {
         state: AccountState::Active.to_string(),
     })
     .await?;
-    
+
     println!("Hello😊, {uname}.");
-    
+
     Ok(())
 }
 

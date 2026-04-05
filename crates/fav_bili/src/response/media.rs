@@ -47,6 +47,28 @@ pub struct Media {
     pub pic: Url,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MediaCollection {
+    #[serde(alias = "aid")]
+    pub id: i64,
+    #[serde(rename = "bvid")]
+    pub bv_id: String,
+    /// 视频up主cid
+    pub upper: Upper,
+    pub title: String,
+    #[serde(default)]
+    pub r#type: MediaType,
+    #[serde(rename = "cover")]
+    pub _pic: Url,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Upper {
+    /// up 的cid
+    pub mid: i64,
+    pub _name: String,
+}
+
 #[derive(Debug, Default, Deserialize, Clone)]
 #[repr(u8)]
 #[serde(from = "u8")]

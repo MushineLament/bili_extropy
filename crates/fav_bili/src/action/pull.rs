@@ -1,29 +1,23 @@
-use std::{io::Write as _, sync::Arc, thread::available_parallelism};
+use std::{path::Path, sync::Arc, thread::available_parallelism};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use api_req::ApiCaller as _;
-use avmux::{AFile, Mux as _, VFile};
 use dashmap::DashSet;
 use futures::StreamExt as _;
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use reqwest::header::{CONTENT_LENGTH, HeaderValue};
+use indicatif::{MultiProgress, ProgressDrawTarget};
 use sea_orm::ColumnTrait as _;
-use tempfile::NamedTempFile;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::{
     api::BiliApi,
     cookies::{add_cookie_jar, parse_cookies},
-    db::{Db, db},
-    entity::{account, media},
-    payload::{DashPayload, MediaInfoAidPayload},
-    response::{Dash, DashData, DashResp, MediaInfoData, MediaInfoResp, Page},
-    state::{AccountState, MediaState},
-    table::head,
+    db::db,
+    entity::account,
+    payload::MediaInfoAidPayload,
+    response::MediaInfoSingle,
+    state::AccountState,
 };
-
-const BAR_TEMPLATE: &str = "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})";
 
 pub async fn pull() -> Result<()> {
     let db = db(false).await;
@@ -53,11 +47,26 @@ pub async fn pull() -> Result<()> {
             let db = db.clone();
             let bars = bars.clone();
             let pulled_medias = pulled_medias.clone();
+
             async move {
+                let m = match BiliApi::request(MediaInfoAidPayload { aid: media.aid })
+                    .await
+                {
+                    Ok(MediaInfoSingle {
+                        code: _,
+                        data:Some(data),
+                        message: _,
+                    }) => data,
+                    err => {
+                    error!("Info unreachable : {:?}", err);
+                        return error!("pull madie error,title: {:?} ,cid: {:?}",media.title,media.cid)
+                    },
+                };
+
                 tokio::select! {
-                    res = download(media, db, bars), if !token.is_cancelled() => match res {
+                    res = crate::action::clone::download(&m, &db,media, bars,&Path::new(".")), if !token.is_cancelled() => match res {
                         Ok(_) => { pulled_medias.insert(media.aid); }
-                        Err(e) => error!("{}", e),
+                        Err(e) => error!("download video error,{}", e),
                     },
                     _ = token.cancelled() => {},
                 }
@@ -82,200 +91,4 @@ pub async fn pull() -> Result<()> {
     drop(bars);
     info!("Finished pulling");
     Ok(())
-}
-
-async fn download(media: &media::MediaModel, db: Db, bars: MultiProgress) -> Result<()> {
-    match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
-        MediaInfoResp {
-            data: Some(MediaInfoData { pages, .. }),
-            code: 0,
-            ..
-        } => {
-            let only1p = pages.len() == 1;
-            for Page { cid, page, part } in pages {
-                let filename = if only1p {
-                    format!("{}-{}", media.aid, media.title)
-                } else {
-                    format!("{}-{}({page})-{part}", media.aid, media.title)
-                };
-                let DashResp {
-                    data:
-                        DashData {
-                            dash: Dash { video, audio },
-                            ..
-                        },
-                    ..
-                } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
-
-                let mut video = video.into_iter();
-                let mut audio = audio.into_iter();
-                loop {
-                    match (video.next(), audio.next()) {
-                        (Some(v), Some(a)) => {
-                            let mut resp_v = BiliApi::client().get(v.base_url).send().await?;
-                            let mut resp_a = BiliApi::client().get(a.base_url).send().await?;
-                            let hv2u64 =
-                                |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
-                            let size = hv2u64(&resp_v.headers()[CONTENT_LENGTH])
-                                + hv2u64(&resp_a.headers()[CONTENT_LENGTH]);
-                            let pb = ProgressBar::new(size);
-                            bars.add(pb.clone());
-                            pb.set_message(head(&part, 10));
-                            pb.set_style(
-                                ProgressStyle::with_template(BAR_TEMPLATE)
-                                    .unwrap()
-                                    .progress_chars("#>-"),
-                            );
-                            let mut file_v = NamedTempFile::new()?;
-                            let mut file_a = NamedTempFile::new()?;
-                            let (mut finished_v, mut finished_a) = (false, false);
-                            loop {
-                                tokio::select! {
-                                    res = resp_v.chunk(), if !finished_v => {
-                                        match res {
-                                            Ok(Some(chunk)) => {
-                                                file_v.write_all(&chunk)?;
-                                                file_v.flush()?;
-                                                pb.inc(chunk.len() as u64);
-                                            }
-                                            Ok(None) => finished_v = true,
-                                            Err(e) => return Err(anyhow!(
-                                                "Failed to download video {filename}: {e}"
-                                            ))
-                                        }
-                                    }
-                                    res = resp_a.chunk(), if !finished_a => {
-                                        match res {
-                                            Ok(Some(chunk)) => {
-                                                file_a.write_all(&chunk)?;
-                                                file_a.flush()?;
-                                                pb.inc(chunk.len() as u64);
-                                            }
-                                            Ok(None) => finished_a = true,
-                                            Err(e) => return Err(anyhow!(
-                                                "Failed to download audio {filename}: {e}"
-                                            ))
-                                        }
-                                    }
-                                    else => break,
-                                }
-                            }
-                            pb.finish();
-                            let title = format!(
-                                "{filename}.mp4",
-                                filename = sanitize_filename::sanitize(&filename)
-                            );
-                            let output_path = format!("./{title}");
-                            if (
-                                VFile::new(file_v.path().to_string_lossy()),
-                                AFile::new(file_a.path().to_string_lossy()),
-                            )
-                                .simple_mux(VFile::new(&output_path))
-                                .is_err()
-                            {
-                                std::fs::remove_file(output_path).ok();
-                                continue;
-                            }
-                        }
-                        (Some(v), None) => {
-                            let mut resp_v = BiliApi::client().get(v.base_url).send().await?;
-                            let hv2u64 =
-                                |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
-                            let size = hv2u64(&resp_v.headers()[CONTENT_LENGTH]);
-                            let pb = ProgressBar::new(size);
-                            bars.add(pb.clone());
-                            pb.set_message(head(part, 10));
-                            pb.set_style(
-                                ProgressStyle::with_template(BAR_TEMPLATE)
-                                    .unwrap()
-                                    .progress_chars("#>-"),
-                            );
-                            let mut file_v = NamedTempFile::new()?;
-                            loop {
-                                match resp_v.chunk().await {
-                                    Ok(Some(chunk)) => {
-                                        file_v.write_all(&chunk)?;
-                                        file_v.flush()?;
-                                        pb.inc(chunk.len() as u64);
-                                    }
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        return Err(anyhow!(
-                                            "Failed to download video {filename}: {e}"
-                                        ));
-                                    }
-                                }
-                            }
-                            pb.finish();
-                            let title = format!(
-                                "{filename}.mp4",
-                                filename = sanitize_filename::sanitize(&filename)
-                            );
-                            tokio::fs::rename(file_v.path(), format!("./{title}")).await?;
-                        }
-                        (None, Some(a)) => {
-                            let mut resp_a = BiliApi::client().get(a.base_url).send().await?;
-                            let hv2u64 =
-                                |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
-                            let size = hv2u64(&resp_a.headers()[CONTENT_LENGTH]);
-                            let pb = ProgressBar::new(size);
-                            bars.add(pb.clone());
-                            pb.set_message(head(part, 10));
-                            pb.set_style(
-                                ProgressStyle::with_template(BAR_TEMPLATE)
-                                    .unwrap()
-                                    .progress_chars("#>-"),
-                            );
-                            let mut file_a = NamedTempFile::new()?;
-                            loop {
-                                match resp_a.chunk().await {
-                                    Ok(Some(chunk)) => {
-                                        file_a.write_all(&chunk)?;
-                                        file_a.flush()?;
-                                        pb.inc(chunk.len() as u64);
-                                    }
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        return Err(anyhow!(
-                                            "Failed to download audio {filename}: {e}"
-                                        ));
-                                    }
-                                }
-                            }
-                            pb.finish();
-                            let title = format!(
-                                "{filename}.mp3",
-                                filename = sanitize_filename::sanitize(&filename)
-                            );
-                            tokio::fs::rename(file_a.path(), format!("./{title}")).await?;
-                        }
-                        (None, None) => return Err(anyhow!("No legal stream in {}", filename)),
-                    }
-                    break;
-                }
-            }
-            db.set_media_state(media.aid, MediaState::Completed).await?;
-            Ok(())
-        }
-        MediaInfoResp {
-            code,
-            message: option_msg,
-            ..
-        } => {
-            db.set_media_state(
-                media.aid,
-                match code {
-                    -403 | 62012 | 62002 => MediaState::PermissionDenied,
-                    _ => MediaState::Expired,
-                },
-            )
-            .await?;
-            Err(anyhow!(
-                "Info unreachable media<{}-{}>: {}",
-                media.aid,
-                media.title,
-                option_msg.unwrap_or_default()
-            ))
-        }
-    }
 }

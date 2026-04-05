@@ -1,5 +1,6 @@
 use anyhow::Result;
 use api_req::{ApiCaller as _, Payload};
+use futures::TryFutureExt;
 use serde::Serialize;
 
 use crate::{
@@ -33,13 +34,23 @@ impl DashPayload {
             qn: 127,
             wts: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "get system time error: {:?},err: {:?}",
+                        err,
+                        (file!(), line!())
+                    )
+                })?
                 .as_secs(),
             wbi: None,
         };
         let WbiResp {
             data: WbiData { wbi_img, .. },
-        } = BiliApi::request(WbiPayload).await?;
+        } = BiliApi::request(WbiPayload)
+            .map_err(|err| {
+                anyhow::anyhow!("get wbi err: {:?},caller:{:?}", err, (file!(), line!()))
+            })
+            .await?;
         this.wbi = Some(WbiEncoder::encode(wbi_img, &this));
         Ok(this)
     }

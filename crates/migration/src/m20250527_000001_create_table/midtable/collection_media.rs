@@ -6,7 +6,7 @@ use crate::m20250527_000001_create_table::{Collection, Media};
 pub enum CollectionMedia {
     Table,
     Id,
-    SetId,
+    CollectionId,
 }
 
 impl CollectionMedia {
@@ -15,11 +15,11 @@ impl CollectionMedia {
             .table(CollectionMedia::Table)
             .if_not_exists()
             .col(big_unsigned(CollectionMedia::Id))
-            .col(big_unsigned(CollectionMedia::SetId))
+            .col(big_unsigned(CollectionMedia::CollectionId))
             .primary_key(
                 Index::create()
                     .col(CollectionMedia::Id)
-                    .col(CollectionMedia::SetId),
+                    .col(CollectionMedia::CollectionId),
             )
             .foreign_key(
                 ForeignKey::create()
@@ -32,7 +32,7 @@ impl CollectionMedia {
             .foreign_key(
                 ForeignKey::create()
                     .name("mediaset_set_fk")
-                    .from(CollectionMedia::Table, CollectionMedia::SetId)
+                    .from(CollectionMedia::Table, CollectionMedia::CollectionId)
                     .to(Collection::Table, Collection::CollectionId)
                     .on_delete(ForeignKeyAction::Cascade)
                     .on_update(ForeignKeyAction::Cascade),

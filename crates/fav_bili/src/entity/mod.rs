@@ -23,7 +23,7 @@ impl ToTableRecord<3> for account::AccountModel {
 impl ToTableRecord<4> for collection::CollectionModel {
     fn to_record(self) -> [String; 4] {
         [
-            self.set_id.to_string(),
+            self.collection_id.to_string(),
             head(self.name, 20),
             self.count.to_string(),
             self.state,

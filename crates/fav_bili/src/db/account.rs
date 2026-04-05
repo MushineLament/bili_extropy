@@ -35,7 +35,10 @@ impl Db {
             .map_err(Into::into)
     }
 
-    pub async fn get_accounts_filtered(&self, filter: SimpleExpr) -> Result<Vec<account::AccountModel>> {
+    pub async fn get_accounts_filtered(
+        &self,
+        filter: SimpleExpr,
+    ) -> Result<Vec<account::AccountModel>> {
         account::AccountEntity::find()
             .filter(filter)
             .all(&self.db)

@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::response::MediaCollection;
+
 use super::Media;
 
 #[derive(Debug, Deserialize)]
@@ -26,7 +28,7 @@ pub struct InSetResp {
 
 #[derive(Debug, Deserialize)]
 pub struct InSetData {
-    pub medias: Vec<Media>,
+    pub medias: Vec<MediaCollection>,
 }
 
 #[derive(Debug, Deserialize)]

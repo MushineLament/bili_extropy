@@ -10,13 +10,13 @@ pub struct CollectionEntity;
 
 impl EntityName for CollectionEntity {
     fn table_name(&self) -> &str {
-        "set"
+        "collection"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct CollectionModel {
-    pub set_id: i64,
+    pub collection_id: i64,
     pub name: String,
     pub count: i64,
     pub state: String,
@@ -24,7 +24,7 @@ pub struct CollectionModel {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
-    SetId,
+    CollectionId,
     Name,
     Count,
     State,
@@ -32,7 +32,7 @@ pub enum Column {
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
-    SetId,
+    CollectionId,
 }
 
 impl PrimaryKeyTrait for PrimaryKey {
@@ -52,7 +52,7 @@ impl ColumnTrait for Column {
     type EntityName = CollectionEntity;
     fn def(&self) -> ColumnDef {
         match self {
-            Self::SetId => ColumnType::BigInteger.def(),
+            Self::CollectionId => ColumnType::BigInteger.def(),
             Self::Name => ColumnType::String(StringLen::None).def(),
             Self::Count => ColumnType::BigInteger.def(),
             Self::State => ColumnType::custom("enum_text").def(),

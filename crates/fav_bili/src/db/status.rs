@@ -4,6 +4,7 @@ use crate::{
     state::SetState,
 };
 use anyhow::{Context, Ok, Result};
+use futures::TryFutureExt;
 use sea_orm::{ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, sea_query::OnConflict};
 
 impl Db {
@@ -29,8 +30,15 @@ impl Db {
         status::StatusEntity::find()
             .filter(status::Column::State.eq(SetState::Active))
             .all(&self.db)
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "get active folders error: {:?},file: {:?},line: {:?}",
+                    err,
+                    file!(),
+                    line!()
+                )
+            })
             .await
-            .context("get active folders error")
     }
 
     pub async fn all_status(&self) -> Result<Vec<StatusModel>> {
@@ -40,12 +48,13 @@ impl Db {
             .context("get all status list error")
     }
 
-    pub async fn get_status_by_id(&self, id: i64) -> Result<StatusModel> {
+    pub async fn _get_status_by_id(&self, id: i64) -> Result<StatusModel> {
         status::StatusEntity::find_by_id(id)
             .one(&self.db)
             .await?
             .context(anyhow::anyhow!("Has not id status<{}>", id))
     }
+
     pub async fn get_status_by_folder(&self, name: &str, path: &str) -> Result<StatusModel> {
         status::StatusEntity::find()
             .filter(status::Column::Name.eq(name))

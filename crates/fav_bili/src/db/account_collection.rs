@@ -9,10 +9,12 @@ impl Db {
         &self,
         set_accounts: impl IntoIterator<Item = account_collection::AccountCollectionModel>,
     ) -> Result<()> {
-        account_collection::AccountCollectionEntity::insert_many(set_accounts.into_iter().map(|m| m.into_active_model()))
-            .on_conflict_do_nothing()
-            .exec_without_returning(&self.db)
-            .await?;
+        account_collection::AccountCollectionEntity::insert_many(
+            set_accounts.into_iter().map(|m| m.into_active_model()),
+        )
+        .on_conflict_do_nothing()
+        .exec_without_returning(&self.db)
+        .await?;
         Ok(())
     }
 
@@ -22,13 +24,19 @@ impl Db {
             .all(&self.db)
             .await
             .map_err(Into::into)
-            .map(|res| res.into_iter().map(|m| m.set_id).collect())
+            .map(|res| res.into_iter().map(|m| m.collection_id).collect())
     }
 
-    pub async fn delete_set_account(&self, set_account: account_collection::AccountCollectionModel) -> Result<()> {
-        account_collection::AccountCollectionEntity::delete_by_id((set_account.set_id, set_account.account_id))
-            .exec(&self.db)
-            .await?;
+    pub async fn delete_set_account(
+        &self,
+        set_account: account_collection::AccountCollectionModel,
+    ) -> Result<()> {
+        account_collection::AccountCollectionEntity::delete_by_id((
+            set_account.collection_id,
+            set_account.account_id,
+        ))
+        .exec(&self.db)
+        .await?;
         Ok(())
     }
 }

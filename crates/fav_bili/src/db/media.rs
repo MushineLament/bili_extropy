@@ -1,4 +1,5 @@
 use anyhow::Result;
+use futures::TryFutureExt;
 use sea_orm::{
     ActiveValue::{Set, Unchanged},
     ConnectionTrait, DatabaseBackend, EntityTrait as _, IntoActiveModel as _, Statement,
@@ -37,6 +38,13 @@ impl Db {
             ..Default::default()
         })
         .exec(&self.db)
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "set media state err: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })
         .await?;
         Ok(())
     }
@@ -60,13 +68,13 @@ WHERE
         SELECT 1
         FROM media_up mu
         JOIN up u ON mu.up_id = u.up_id
-        WHERE mu.id = m.id AND u.state = 'Active'
+        WHERE mu.id = m.aid AND u.state = 'Active'
     )
     OR EXISTS (
         SELECT 1
-        FROM media_set ms
-        JOIN "set" s ON ms.set_id = s.set_id
-        WHERE ms.id = m.id AND s.state = 'Active'
+        FROM collection_media cm
+        JOIN "collection" s ON cm.collection_id = s.collection_id
+        WHERE cm.id = m.aid AND s.state = 'Active'
     );
 "#,
             ))
@@ -89,13 +97,13 @@ AND (
         SELECT 1
         FROM media_up mu
         JOIN up u ON mu.up_id = u.up_id
-        WHERE mu.id = m.id AND u.state = 'Active'
+        WHERE mu.id = m.aid AND u.state = 'Active'
     )
     OR EXISTS (
         SELECT 1
-        FROM media_set ms
-        JOIN "set" s ON ms.set_id = s.set_id
-        WHERE ms.id = m.id AND s.state = 'Active'
+        FROM collection_media ms
+        JOIN "collection" s ON ms.collection_id = s.collection_id
+        WHERE ms.id = m.aid AND s.state = 'Active'
     )
 );
 "#,
@@ -122,7 +130,7 @@ WHERE id IN (
     )
     AND NOT EXISTS (
         SELECT 1 FROM media_set ms
-        JOIN "set" s ON ms.set_id = s.set_id
+        JOIN "set" s ON ms.collection_id = s.collection_id
         WHERE ms.id = m.id AND s.state != 'Inactive'
     )
 );

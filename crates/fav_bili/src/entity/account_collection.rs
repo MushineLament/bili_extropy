@@ -10,25 +10,25 @@ pub struct AccountCollectionEntity;
 
 impl EntityName for AccountCollectionEntity {
     fn table_name(&self) -> &str {
-        "set_account"
+        "account_collection"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct AccountCollectionModel {
-    pub set_id: i64,
+    pub collection_id: i64,
     pub account_id: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
-    SetId,
+    CollectionId,
     AccountId,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
-    SetId,
+    CollectionId,
     AccountId,
 }
 
@@ -49,7 +49,7 @@ impl ColumnTrait for Column {
     type EntityName = AccountCollectionEntity;
     fn def(&self) -> ColumnDef {
         match self {
-            Self::SetId => ColumnType::BigInteger.def(),
+            Self::CollectionId => ColumnType::BigInteger.def(),
             Self::AccountId => ColumnType::BigInteger.def(),
         }
     }
@@ -63,8 +63,8 @@ impl RelationTrait for Relation {
                 .to(super::account::Column::AccountId)
                 .into(),
             Self::Set => AccountCollectionEntity::belongs_to(super::collection::CollectionEntity)
-                .from(Column::SetId)
-                .to(super::collection::Column::SetId)
+                .from(Column::CollectionId)
+                .to(super::collection::Column::CollectionId)
                 .into(),
         }
     }

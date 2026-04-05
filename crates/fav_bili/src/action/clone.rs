@@ -1,12 +1,12 @@
 use std::{
-    ffi,
     fs::{self},
     io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow};
-use api_req::{ApiCaller as _, Payload};
+use api_req::ApiCaller as _;
+use futures::TryFutureExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use reqwest::header::{CONTENT_LENGTH, HeaderValue};
 use sea_orm::ColumnTrait as _;
@@ -66,19 +66,11 @@ pub async fn only_download(bvid: &String) -> Result<()> {
         cid: m.cid,
     };
 
-    let status = db.get_active_status().await?;
+    db.upsert_medias([media.clone()])
+        .await
+        .context("can't not upsert media in to table")?;
 
-    for status in status {
-        let path = Path::new(&status.path);
-
-        let file = path.join(&status.name);
-
-        db.upsert_medias([media.clone()])
-            .await
-            .context("can't not upsert media in to table")?;
-
-        download(&m, db, &media, bars.clone(), &file).await?;
-    }
+    download(&m, db, &media, bars.clone(), &Path::new(".")).await?;
 
     Ok(())
 }
@@ -90,63 +82,68 @@ pub async fn download(
     bars: MultiProgress,
     path: &Path,
 ) -> Result<()> {
-    let file = db
-        .get_active_status()
-        .await
-        .context("get active status error,when download by clone")?;
+    let file = db.get_active_status().await?;
 
     let folders = file
         .iter()
         .map(|model| Path::new(&model.path).join(&model.name))
-        .map(|path| {
+        .filter(|path| {
             if !path.exists() {
-                return fs::create_dir_all(&path).map(|_| path);
+                if let Err(err) = fs::create_dir_all(path) {
+                    error!(
+                        "create directoy error: {:?},file: {:?}, line: {:?}",
+                        err,
+                        file!(),
+                        line!()
+                    )
+                }
+                return false;
             }
 
             if !path.is_dir() {
-                return io::Result::Err(io::Error::new(
-                    io::ErrorKind::NotADirectory,
-                    "The path is not a directory",
-                ));
+                error!(
+                    "The path is not a directory,file: {:?}, line: {:?}",
+                    file!(),
+                    line!()
+                );
+
+                return false;
             }
 
-            Ok(path)
-        })
-        .filter_map(|path| {
-            if let Err(err) = &path {
-                error!("get or create active status err:{:?}", err);
-            }
-            path.ok()
+            true
         })
         .collect::<Vec<_>>();
 
-    let icon_file =
-        NamedTempFile::new_in(path).context("can't not create icon download temp file")?;
+    let icon_file = NamedTempFile::new_in(path).map_err(|err| {
+        anyhow::anyhow!(
+            "can't not download temp file err: {:?},caller: {:?}",
+            err,
+            (file!(), line!())
+        )
+    })?;
 
-    download_file(response.pic.clone(), &icon_file)
-        .await
-        .context("can't not download icon")?;
-
-    file_into_folder(
-        folders
-            .iter()
-            .map(|folder| folder.join(media.aid.to_string()))
-            .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string()))),
-        &[("cover.jpg", Some(&icon_file))],
-    );
+    download_file(response.pic.clone(), &icon_file).await?;
 
     let MediaInfoResp {
         code,
         data,
         message,
-    } = BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await?;
+    } = BiliApi::request(MediaInfoAidPayload { aid: media.aid })
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "can't get media infomation err: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })
+        .await?;
 
     let (
         Some(MediaInfoData {
             owner,
             pages,
-            staff,
-            cid: media_cid,
+            staff: _,
+            cid: _media_cid,
         }),
         0,
     ) = (data, code)
@@ -170,7 +167,7 @@ pub async fn download(
 
     let only1p = pages.len() == 1;
     for Page { cid, page, part } in pages {
-        let filename = if only1p {
+        let _filename = if only1p {
             format!("{}-{}", media.aid, media.title)
         } else {
             format!("{}-{}({page})-{part}", media.aid, media.title)
@@ -182,7 +179,15 @@ pub async fn download(
                     timelength,
                 },
             ..
-        } = BiliApi::request(DashPayload::new(media.aid, cid).await?).await?;
+        } = BiliApi::request(DashPayload::new(media.aid, cid).await?)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "get dash payload err: {:?},caller: {:?}",
+                    err,
+                    (file!(), line!())
+                )
+            })?;
 
         let mut video = video.into_iter();
         let mut audio = audio.into_iter();
@@ -190,6 +195,7 @@ pub async fn download(
         let (v, a) = (video.next(), audio.next());
 
         if v.is_none() && a.is_none() {
+            // TODO! need more detailed error infomation.
             continue;
         }
 
@@ -221,32 +227,70 @@ pub async fn download(
 
         let pb = create_progress_bar(size, &bars, &part);
 
-        let file_v = resp_v.is_some().then_some(
-            NamedTempFile::new_in(path)
-                .context("Can't not create video temp download file in directory 1")?,
-        );
+        let file_v = resp_v
+            .is_some()
+            .then_some(NamedTempFile::new_in(path).map_err(|err| {
+                anyhow::anyhow!(
+                    "can't not download temp file err: {:?},caller: {:?}",
+                    err,
+                    (file!(), line!())
+                )
+            })?);
 
-        let file_a = resp_a.is_some().then_some(
-            NamedTempFile::new_in(path)
-                .context("Can't not create audio temp download file in directory 1")?,
-        );
+        let file_a = resp_a
+            .is_some()
+            .then_some(NamedTempFile::new_in(path).map_err(|err| {
+                anyhow::anyhow!(
+                    "can't not download temp file err: {:?},caller: {:?}",
+                    err,
+                    (file!(), line!())
+                )
+            })?);
 
-        let file_index = NamedTempFile::new_in(path)
-            .context("Can't not create index temp download file in directory 1")?;
+        let file_index = NamedTempFile::new_in(path).map_err(|err| {
+            anyhow::anyhow!(
+                "can't not download temp file err: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })?;
 
-        let mut file_danmu = NamedTempFile::new_in(path)
-            .context("Can't create danmu temp download file in directory")?;
+        let mut file_danmu = NamedTempFile::new_in(path).map_err(|err| {
+            anyhow::anyhow!(
+                "can't not download temp file err: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })?;
 
-        let mut file_danmu_xml = NamedTempFile::new_in(path)
-            .context("Can't create danmu temp download file in directory")?;
+        let mut file_danmu_xml = NamedTempFile::new_in(path).map_err(|err| {
+            anyhow::anyhow!(
+                "can't not download temp file err: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })?;
 
-        let mut file_entry = NamedTempFile::new_in(path)
-            .context("Can't create entry temp download file in directory")?;
+        let file_entry = NamedTempFile::new_in(path).map_err(|err| {
+            anyhow::anyhow!(
+                "can't not download temp file err: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })?;
 
         let system_now = std::time::SystemTime::now();
-        let duration_file_create = system_now
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("系统时间早于纪元");
+
+        let duration_file_create =
+            system_now
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "get system time err: {:?},caller: {:?}",
+                        err,
+                        (file!(), line!())
+                    )
+                })?;
 
         let client = BiliApi::client();
 
@@ -257,7 +301,13 @@ pub async fn download(
 
         let mut danmu_response = client.get(&danmu_url).send().await?;
 
-        while let Some(chunk) = danmu_response.chunk().await? {
+        while let Some(chunk) = danmu_response.chunk().await.map_err(|err| {
+            anyhow::anyhow!(
+                "get chunk error: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })? {
             file_danmu.write_all(&chunk)?;
             file_danmu.flush()?;
         }
@@ -265,10 +315,22 @@ pub async fn download(
         let client = BiliApi::client();
 
         let xml_url = format!("https://api.bilibili.com/x/v1/dm/list.so?oid={}", media.cid);
-        let xml_response = client.get(&xml_url).send().await?;
+        let xml_response = client.get(&xml_url).send().await.map_err(|err| {
+            anyhow::anyhow!(
+                "get response error: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })?;
 
         // 获取响应体字节
-        let bytes = xml_response.bytes().await?;
+        let bytes = xml_response.bytes().await.map_err(|err| {
+            anyhow::anyhow!(
+                "get xml bytes error: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })?;
 
         // 解压 deflate 数据
         let mut decoder = flate2::bufread::DeflateDecoder::new(&bytes[..]);
@@ -286,12 +348,18 @@ pub async fn download(
             file_a.as_ref(),
             &pb,
         )
-        .await
-        .expect("处理下载视频的函数发生错误 1");
+        .await?;
 
-        let duration_file_update = system_now
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("系统时间早于纪元");
+        let duration_file_update =
+            system_now
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "get system time error: {:?},caller: {:?}",
+                        err,
+                        (file!(), line!())
+                    )
+                })?;
 
         let mut index = IndexOuput::default();
 
@@ -312,8 +380,8 @@ pub async fn download(
                 frame_rate: a.frame_rate.clone(),
                 width: a.width,
                 height: a.height,
-                widevinePssh: "".to_string(),
-                bilidrmUri: "".to_string(),
+                widevine_pssh: "".to_string(),
+                bilidrm_uri: "".to_string(),
             });
             a.id
         } else {
@@ -337,8 +405,8 @@ pub async fn download(
                 frame_rate: v.frame_rate.clone(),
                 width: v.width,
                 height: v.height,
-                widevinePssh: "".to_string(),
-                bilidrmUri: "".to_string(),
+                widevine_pssh: "".to_string(),
+                bilidrm_uri: "".to_string(),
             });
             v.id
         } else {
@@ -387,8 +455,21 @@ pub async fn download(
             can_play_in_advance: true,
             interrupt_transform_temp_file: false,
             quality_pithy_description: match v_id {
+                6 => "240P",
+                16 => "360P",
+                32 => "480P",
+                64 => "720P",
+                74 => "720P60",
                 80 => "1080P",
-                _ => unreachable!("未定义的视频清晰度"),
+                100 => "智能修复",
+                112 => "1080P+",
+                116 => "1080P60",
+                120 => "4K",
+                125 => "HDR",
+                126 => "杜比视界",
+                127 => "8K",
+                129 => "HDR",
+                _ => unreachable!("未定义的视频清晰度:{:?}", v_id),
             }
             .to_string(),
             quality_superscript: "".to_owned(),
@@ -408,8 +489,8 @@ pub async fn download(
                 cid,
                 page,
                 from: "vupload".to_string(),
-                part:media.title.clone(),
-                link: format!("bilibili://video/{}?cid={}", media.aid, media_cid),
+                part: media.title.clone(),
+                link: format!("bilibili://video/{}?cid={}", media.aid, cid),
                 rich_vid: "".to_owned(),
                 has_alias: false,
                 tid: 0,
@@ -431,11 +512,12 @@ pub async fn download(
             folders
                 .iter()
                 .map(|folder| folder.join(media.aid.to_string()))
-                .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string()))),
+                .map(|aid_foler| aid_foler.join(format!("c_{}", cid.to_string()))),
             &[
                 ("danmaku.pb", Some(&file_danmu)),
                 ("danmaku.xml", Some(&file_danmu_xml)),
                 ("entry.json", Some(&file_entry)),
+                ("cover.jpg", Some(&icon_file)),
             ],
         );
 
@@ -444,7 +526,7 @@ pub async fn download(
             folders
                 .iter()
                 .map(|folder| folder.join(media.aid.to_string()))
-                .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string())))
+                .map(|aid_foler| aid_foler.join(format!("c_{}", cid.to_string())))
                 .map(|up_cid| up_cid.join(v_id.to_string())),
             &[
                 ("video.m4s", file_v.as_ref()),
@@ -492,7 +574,14 @@ async fn download_video_audio(
     let (mut finished_v, mut finished_a) = (false, false);
     loop {
         tokio::select! {
-            res = async { resp_v.as_mut().unwrap().chunk().await }, if !finished_v && resp_v.is_some() && file_v.is_some() => {
+            res = async { resp_v.as_mut().unwrap().chunk().map_err(|err| {
+                anyhow::anyhow!(
+                    "get chunk error: {:?},caller: {:?}",
+                    err,
+                    (file!(), line!())
+                )}).await
+            },
+            if !finished_v && resp_v.is_some() && file_v.is_some() => {
                 match res {
                     Ok(Some(chunk)) => {
                         file_v.as_mut().unwrap().write_all(&chunk)?;
@@ -506,7 +595,14 @@ async fn download_video_audio(
                 }
             }
 
-            res = async { resp_a.as_mut().unwrap().chunk().await }, if !finished_a && resp_a.is_some() && file_a.is_some() => {
+            res = async { resp_a.as_mut().unwrap().chunk().map_err(|err| {
+                anyhow::anyhow!(
+                    "get chunk error: {:?},caller: {:?}",
+                    err,
+                    (file!(), line!())
+                )
+            }).await },
+            if !finished_a && resp_a.is_some() && file_a.is_some() => {
                 match res {
                     Ok(Some(chunk)) => {
                         file_a.as_mut().unwrap().write_all(&chunk)?;
@@ -587,7 +683,9 @@ fn get_size_md5(file: &NamedTempFile) -> Result<(u64, String)> {
 }
 
 async fn download_file(url: Url, mut file: &NamedTempFile) -> Result<()> {
-    let mut pic = reqwest::get(url).await.context("url can't get")?;
+    let mut pic = reqwest::get(url)
+        .map_err(|err| anyhow::anyhow!("url can't get,err: {:?}", err))
+        .await?;
 
     loop {
         match pic.chunk().await {

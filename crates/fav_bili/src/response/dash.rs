@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -14,8 +16,8 @@ pub struct DashData {
 
 #[derive(Debug, Deserialize)]
 pub struct Dash {
-    pub video: Vec<Video>,
-    pub audio: Vec<Audio>,
+    pub video: VecDeque<Video>,
+    pub audio: VecDeque<Audio>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

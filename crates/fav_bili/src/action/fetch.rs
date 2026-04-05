@@ -46,10 +46,10 @@ pub async fn fetch(prune: bool) -> Result<()> {
         } = BiliApi::request(ListSetPayload { up_mid: account_id }).await?;
 
         if !list.is_empty() {
-            db.upsert_sets(list.iter().map(|set| {
+            db.upsert_collections(list.iter().map(|set| {
                 debug!("Updating set<{}>", set.title);
                 collection::CollectionModel {
-                    set_id: set.id,
+                    collection_id: set.id,
                     name: set.title.to_owned(),
                     count: set.media_count,
                     state: SetState::Inactive.to_string(), // conflic skip
@@ -59,7 +59,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
             db.upsert_set_accounts(list.iter().map(|set| {
                 debug!("Linking account<{}> and set<{}>", account.name, set.title,);
                 account_collection::AccountCollectionModel {
-                    set_id: set.id,
+                    collection_id: set.id,
                     account_id,
                 }
             }))
@@ -75,7 +75,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
 
         for set_id in old_set_ids {
             db.delete_set_account(account_collection::AccountCollectionModel {
-                set_id,
+                collection_id: set_id,
                 account_id,
             })
             .await?;
@@ -167,12 +167,13 @@ pub async fn fetch(prune: bool) -> Result<()> {
                     let InSetResp {
                         data: InSetData { medias },
                     } = BiliApi::request(InSetPayload {
-                        media_id: set.set_id,
+                        media_id: set.collection_id,
                         pn,
                         ps: 20,
                     })
                     .await
-                    .context(format!("Failed to fetch sets' page {pn}"))?;
+                    // .context(format!("Failed to fetch sets' page {pn}"))
+                    ?;
                     Ok::<_, anyhow::Error>(medias)
                 })
                 .buffer_unordered(8);
@@ -192,13 +193,16 @@ pub async fn fetch(prune: bool) -> Result<()> {
                         title: m.title.to_owned(),
                         r#type: m.r#type.to_string(),
                         state: MediaState::Pending.to_string(),
-                        cid: m.cid,
+                        cid: m.upper.mid,
                     }
                 }))
                 .await?;
                 db.upsert_media_sets(medias.into_iter().map(|m| {
                     debug!("Linking media<{}> and set<{}>", m.title, set.name);
-                    collection_media::CollectionMediaModel { id: m.id, set_id }
+                    collection_media::CollectionMediaModel {
+                        id: m.id,
+                        collection_id: set_id,
+                    }
                 }))
                 .await?;
             }
