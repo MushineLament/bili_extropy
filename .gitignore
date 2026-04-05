@@ -6,7 +6,4 @@ temp.*
 data.*
 *.mp4
 *.mp3
-bilibili
-bilibili_collection
-bilibili_collection2
-*.ps1
+downloadtest_*
