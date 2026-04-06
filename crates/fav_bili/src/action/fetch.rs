@@ -181,7 +181,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
             while let Some(res) = tasks.next().await {
                 match res {
                     Ok(list) => medias.extend(list),
-                    Err(e) => error!("{}", e),
+                    Err(e) => error!("caller: {:?},{}", (file!(), line!()), e),
                 }
             }
             if !medias.is_empty() {

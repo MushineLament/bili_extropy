@@ -14,7 +14,7 @@ impl EntityName for MediaEntity {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
+#[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq, Hash)]
 pub struct MediaModel {
     pub aid: i64,
     pub bv_id: String,

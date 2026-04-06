@@ -6,7 +6,7 @@ pub struct Up {
     pub mid: i64,
     #[serde(alias = "uname")]
     pub name: String,
-    pub _face: Url,
+    pub face: Url,
 }
 
 #[derive(Debug, Deserialize)]
