@@ -30,57 +30,71 @@ pub async fn pull() -> Result<()> {
     let pulled_medias = Arc::new(DashSet::<i64>::new());
 
     let medias = db.all_active_pending_medias().await?;
+
+    let medias = Arc::new(medias);
+
     let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
 
-    let mut tasks = accounts.into_iter().map(|account| {
-        info!("Pulling medias with account<{}>", account.name);
-        add_cookie_jar(parse_cookies(&account.cookies));
-        CancellationToken::new()
-    }).map(|token|{
-        let token2 = token.clone();
-        (medias
-            .iter()
-            .filter(|media| !pulled_medias.contains(&media.aid))
-            .map(move |media|(media,token.clone()))
-            .map(|(media,token)| {
-                let db = db.clone();
-                let bars = bars.clone();
-                let pulled_medias = pulled_medias.clone();
+    let token = CancellationToken::new();
 
-                let task = async move {
-                    let m = match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await {
-                        Ok(MediaInfoSingle {
-                            code: _,
-                            data: Some(data),
-                            message: _,
-                        }) => data,
-                        err => {
-                            error!("Info unreachable : {:?}", err);
-                            return error!(
-                                "pull madie error,title: {:?} ,cid: {:?}",
-                                media.title, media.cid
-                            );
-                        }
-                    };
-                    tokio::select! {
-                        res = crate::action::clone::download(&m, &db,media, bars,&Path::new(crate::action::TEMP_DOWNLOAD_FOLDER)), if !token.is_cancelled() => match res {
-                            Ok(_) => { pulled_medias.insert(media.aid); }
-                            Err(e) => error!("aid: {:?},bvid: {:?},download video error,{}",media.aid,media.bv_id, e),
-                        },
-                        _ = token.cancelled() => {},
-                    }
-                };
-                task
-            }),token2)
-    });
+    let token2 = token.clone();
+    let tasks = accounts
+        .into_iter()
+        .map(move|account| {
+            info!("Pulling medias with account<{}>", account.name);
+            add_cookie_jar(parse_cookies(&account.cookies));
+            token2.clone()
+        })
+        .map(   move|token| {
+            let token = token;
+            let medias = medias.clone();
+            let db = db.clone();
+            let bars = bars.clone();
+            let pulled_medias = pulled_medias.clone();
+            let range = 0..medias.len();
+            range.clone().into_iter().map(move |id| {
+                (
+                    medias.clone(),
+                    id,
+                    token.clone(),
+                    db.clone(),
+                    bars.clone(),
+                    pulled_medias.clone(),
+                )
+            })
+        })
+        .flatten()
+        .map(|(medias, id, token, db, bars, pulled_medias)| async move {
+            let m = match BiliApi::request(MediaInfoAidPayload {
+                aid: medias[id].aid,
+            })
+            .await
+            {
+                Ok(MediaInfoSingle {
+                    code: _,
+                    data: Some(data),
+                    message: _,
+                }) => data,
+                err => {
+                    error!("Info unreachable : {:?}", err);
+                    return error!(
+                        "pull madie error,title: {:?} ,cid: {:?}",
+                        medias[id].title, medias[id].cid
+                    );
+                }
+            };
+            tokio::select! {
+                res = crate::action::clone::download(&m, &db,&medias[id], bars,&Path::new(crate::action::TEMP_DOWNLOAD_FOLDER)), if !token.is_cancelled() => match res {
+                    Ok(_) => { pulled_medias.insert(medias[id].aid); }
+                    Err(e) => error!("aid: {:?},bvid: {:?},download video error,{}",medias[id].aid,medias[id].bv_id, e),
+                },
+                _ = token.cancelled() => {},
+            }
+        });
 
-    loop {
-        let Some((tasks, token)) = tasks.next() else {
-            break;
-        };
+    let mut tasks = futures::stream::iter(tasks).buffer_unordered(LIMIT_PAR_DOWNLOAD);
 
-        let mut tasks = futures::stream::iter(tasks).buffer_unordered(LIMIT_PAR_DOWNLOAD);
-
+    let tasks = async move {
         loop {
             tokio::select! {
                 res = tasks.next() => {
@@ -95,9 +109,11 @@ pub async fn pull() -> Result<()> {
                 }
             }
         }
-    }
+    };
 
-    drop(bars);
+    let join = tokio::spawn(tasks);
+    let _test = join.await?;
+
     info!("Finished pulling");
     Ok(())
 }
