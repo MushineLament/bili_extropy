@@ -204,18 +204,18 @@ pub async fn download(
             ..
         } = BiliApi::request(DashPayload::new(media.aid, cid).await.map_err(|err| {
             anyhow::anyhow!(
-                "aid:{:?},get response error:{:?},caller:{:?}",
+                "caller: {:?},aid:{:?},get response error:{:?}",
+                (file!(), line!()),
                 media.aid,
                 err,
-                (file!(), line!())
             )
         })?)
         .await
-        .map_err(|err| {
+        .map_err(|_err| {
             anyhow!(
-                "get dash payload err: {:?},caller: {:?}",
-                err,
-                (file!(), line!())
+                "caller: {:?},get dash payload err,maybe is pay media or other reason,bvid: {:?}",
+                (file!(), line!()),
+                media.bv_id,
             )
         })?;
 

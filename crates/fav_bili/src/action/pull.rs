@@ -32,21 +32,22 @@ pub async fn pull() -> Result<()> {
     let medias = db.all_active_pending_medias().await?;
     let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
 
-    for account in accounts {
+    let mut tasks = accounts.into_iter().map(|account| {
         info!("Pulling medias with account<{}>", account.name);
         add_cookie_jar(parse_cookies(&account.cookies));
-        let token = CancellationToken::new();
-
-        let tasks = medias
+        CancellationToken::new()
+    }).map(|token|{
+        let token2 = token.clone();
+        (medias
             .iter()
             .filter(|media| !pulled_medias.contains(&media.aid))
-            .map(|media| {
-                let token = token.clone();
+            .map(move |media|(media,token.clone()))
+            .map(|(media,token)| {
                 let db = db.clone();
                 let bars = bars.clone();
                 let pulled_medias = pulled_medias.clone();
 
-                async move {
+                let task = async move {
                     let m = match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await {
                         Ok(MediaInfoSingle {
                             code: _,
@@ -68,8 +69,15 @@ pub async fn pull() -> Result<()> {
                         },
                         _ = token.cancelled() => {},
                     }
-                }
-            });
+                };
+                task
+            }),token2)
+    });
+
+    loop {
+        let Some((tasks, token)) = tasks.next() else {
+            break;
+        };
 
         let mut tasks = futures::stream::iter(tasks).buffer_unordered(LIMIT_PAR_DOWNLOAD);
 
@@ -88,6 +96,7 @@ pub async fn pull() -> Result<()> {
             }
         }
     }
+
     drop(bars);
     info!("Finished pulling");
     Ok(())

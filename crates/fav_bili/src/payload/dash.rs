@@ -52,6 +52,7 @@ impl DashPayload {
             })
             .await?;
         this.wbi = Some(WbiEncoder::encode(wbi_img, &this));
+
         Ok(this)
     }
 }
