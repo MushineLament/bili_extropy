@@ -3,10 +3,11 @@ use std::{path::Path, sync::Arc};
 use anyhow::Result;
 use api_req::ApiCaller as _;
 use dashmap::DashSet;
+use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressDrawTarget};
 use sea_orm::ColumnTrait as _;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     api::BiliApi,
@@ -17,6 +18,8 @@ use crate::{
     response::MediaInfoSingle,
     state::AccountState,
 };
+
+pub const LIMIT_PAR_DOWNLOAD: usize = 3;
 
 pub async fn pull() -> Result<()> {
     let db = db(false).await;
@@ -34,7 +37,7 @@ pub async fn pull() -> Result<()> {
         add_cookie_jar(parse_cookies(&account.cookies));
         let token = CancellationToken::new();
 
-        let mut tasks = medias
+        let tasks = medias
             .iter()
             .filter(|media| !pulled_medias.contains(&media.aid))
             .map(|media| {
@@ -68,11 +71,21 @@ pub async fn pull() -> Result<()> {
                 }
             });
 
+        let mut tasks = futures::stream::iter(tasks).buffer_unordered(LIMIT_PAR_DOWNLOAD);
+
         loop {
-            let Some(task) = tasks.next() else {
-                break;
-            };
-            let _task = task.await;
+            tokio::select! {
+                res = tasks.next() => {
+                    if res.is_none() {
+                        break;
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    token.cancel();
+                    warn!("Received Ctrl-C");
+                    break;
+                }
+            }
         }
     }
     drop(bars);
