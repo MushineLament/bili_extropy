@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::response::MediaCollection;
+use crate::response::{MediaCollection, MediaUp};
 
 use super::Media;
 
@@ -43,5 +43,5 @@ pub struct InUpData {
 
 #[derive(Debug, Deserialize)]
 pub struct InUpList {
-    pub vlist: Vec<Media>,
+    pub vlist: Vec<MediaUp>,
 }

@@ -48,6 +48,19 @@ pub struct Media {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct MediaUp {
+    #[serde(alias = "aid")]
+    pub id: i64,
+    #[serde(rename = "bvid")]
+    pub bv_id: String,
+    /// 视频up主cid
+    pub mid: i64,
+    pub title: String,
+    #[serde(default)]
+    pub r#type: MediaType,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MediaCollection {
     pub id: i64,
     #[serde(rename = "bvid")]

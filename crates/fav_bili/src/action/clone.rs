@@ -28,6 +28,8 @@ use crate::{
 
 const BAR_TEMPLATE: &str = "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})";
 
+pub const TEMP_DOWNLOAD_FOLDER: &str = ".temp";
+
 pub async fn only_download(bvid: &String) -> Result<()> {
     let db = db(false).await;
     let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
@@ -70,7 +72,14 @@ pub async fn only_download(bvid: &String) -> Result<()> {
         .await
         .context("can't not upsert media in to table")?;
 
-    download(&m, db, &media, bars.clone(), &Path::new(".")).await?;
+    download(
+        &m,
+        db,
+        &media,
+        bars.clone(),
+        &Path::new(TEMP_DOWNLOAD_FOLDER),
+    )
+    .await?;
 
     Ok(())
 }
@@ -80,9 +89,23 @@ pub async fn download(
     db: &Db,
     media: &media::MediaModel,
     bars: MultiProgress,
-    path: &Path,
+    temp_path: &Path,
 ) -> Result<()> {
+    if !Path::new(temp_path).exists() {
+        if let Err(err) = fs::create_dir_all(temp_path) {
+            return Err(anyhow!("can't create temp download folder: {:?}", err));
+        };
+    }
+
+    if !Path::new(temp_path).is_dir() {
+        return Err(anyhow!(".temp not is a folder"));
+    }
+
     let file = db.get_active_status().await?;
+
+    if file.is_empty() {
+        return Err(anyhow!("Not any status error"));
+    }
 
     let folders = file
         .iter()
@@ -114,7 +137,7 @@ pub async fn download(
         })
         .collect::<Vec<_>>();
 
-    let icon_file = NamedTempFile::new_in(path).map_err(|err| {
+    let icon_file = NamedTempFile::new_in(temp_path).map_err(|err| {
         anyhow::anyhow!(
             "can't not download temp file err: {:?},caller: {:?}",
             err,
@@ -179,15 +202,22 @@ pub async fn download(
                     timelength,
                 },
             ..
-        } = BiliApi::request(DashPayload::new(media.aid, cid).await?)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "get dash payload err: {:?},caller: {:?}",
-                    err,
-                    (file!(), line!())
-                )
-            })?;
+        } = BiliApi::request(DashPayload::new(media.aid, cid).await.map_err(|err| {
+            anyhow::anyhow!(
+                "aid:{:?},get response error:{:?},caller:{:?}",
+                media.aid,
+                err,
+                (file!(), line!())
+            )
+        })?)
+        .await
+        .map_err(|err| {
+            anyhow!(
+                "get dash payload err: {:?},caller: {:?}",
+                err,
+                (file!(), line!())
+            )
+        })?;
 
         let mut video = video.into_iter();
         let mut audio = audio.into_iter();
@@ -229,7 +259,7 @@ pub async fn download(
 
         let file_v = resp_v
             .is_some()
-            .then_some(NamedTempFile::new_in(path).map_err(|err| {
+            .then_some(NamedTempFile::new_in(temp_path).map_err(|err| {
                 anyhow::anyhow!(
                     "can't not download temp file err: {:?},caller: {:?}",
                     err,
@@ -239,7 +269,7 @@ pub async fn download(
 
         let file_a = resp_a
             .is_some()
-            .then_some(NamedTempFile::new_in(path).map_err(|err| {
+            .then_some(NamedTempFile::new_in(temp_path).map_err(|err| {
                 anyhow::anyhow!(
                     "can't not download temp file err: {:?},caller: {:?}",
                     err,
@@ -247,7 +277,7 @@ pub async fn download(
                 )
             })?);
 
-        let file_index = NamedTempFile::new_in(path).map_err(|err| {
+        let file_index = NamedTempFile::new_in(temp_path).map_err(|err| {
             anyhow::anyhow!(
                 "can't not download temp file err: {:?},caller: {:?}",
                 err,
@@ -255,7 +285,7 @@ pub async fn download(
             )
         })?;
 
-        let mut file_danmu = NamedTempFile::new_in(path).map_err(|err| {
+        let mut file_danmu = NamedTempFile::new_in(temp_path).map_err(|err| {
             anyhow::anyhow!(
                 "can't not download temp file err: {:?},caller: {:?}",
                 err,
@@ -263,7 +293,7 @@ pub async fn download(
             )
         })?;
 
-        let mut file_danmu_xml = NamedTempFile::new_in(path).map_err(|err| {
+        let mut file_danmu_xml = NamedTempFile::new_in(temp_path).map_err(|err| {
             anyhow::anyhow!(
                 "can't not download temp file err: {:?},caller: {:?}",
                 err,
@@ -271,7 +301,7 @@ pub async fn download(
             )
         })?;
 
-        let file_entry = NamedTempFile::new_in(path).map_err(|err| {
+        let file_entry = NamedTempFile::new_in(temp_path).map_err(|err| {
             anyhow::anyhow!(
                 "can't not download temp file err: {:?},caller: {:?}",
                 err,
@@ -299,7 +329,14 @@ pub async fn download(
             media.cid
         );
 
-        let mut danmu_response = client.get(&danmu_url).send().await?;
+        let mut danmu_response = client.get(&danmu_url).send().await.map_err(|err| {
+            anyhow::anyhow!(
+                "aid:{:?},get response error:{:?},caller:{:?}",
+                media.aid,
+                err,
+                (file!(), line!())
+            )
+        })?;
 
         while let Some(chunk) = danmu_response.chunk().await.map_err(|err| {
             anyhow::anyhow!(
@@ -336,7 +373,16 @@ pub async fn download(
         let mut decoder = flate2::bufread::DeflateDecoder::new(&bytes[..]);
         let mut decompressed = Vec::new();
         use std::io::Read;
-        decoder.read_to_end(&mut decompressed)?;
+
+        if !decompressed.is_empty() {
+            decoder.read_to_end(&mut decompressed).map_err(|err| {
+                anyhow::anyhow!(
+                    "unzip danmu xml error:{:?},caller:{:?}",
+                    err,
+                    (file!(), line!())
+                )
+            })?;
+        }
 
         file_danmu_xml.write_all(&decompressed)?;
 
@@ -562,12 +608,24 @@ async fn download_video_audio(
     pb: &ProgressBar,
 ) -> Result<()> {
     let mut resp_v = match v {
-        Some(v) => Some(BiliApi::client().get(v.base_url.clone()).send().await?),
+        Some(v) => Some(
+            BiliApi::client()
+                .get(v.base_url.clone())
+                .send()
+                .await
+                .map_err(|err| anyhow::anyhow!("aid:{:?},get response error:{:?}", id, err))?,
+        ),
         _ => None,
     };
 
     let mut resp_a = match a {
-        Some(a) => Some(BiliApi::client().get(a.base_url.clone()).send().await?),
+        Some(a) => Some(
+            BiliApi::client()
+                .get(a.base_url.clone())
+                .send()
+                .await
+                .map_err(|err| anyhow::anyhow!("aid:{:?},get response error:{:?}", id, err))?,
+        ),
         _ => None,
     };
 

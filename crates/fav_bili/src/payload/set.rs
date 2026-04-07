@@ -51,6 +51,7 @@ impl InUpPayload {
             data: WbiData { wbi_img, .. },
         } = BiliApi::request(WbiPayload).await?;
         this.wbi = Some(WbiEncoder::encode(wbi_img, &this));
+
         Ok(this)
     }
 }

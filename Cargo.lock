@@ -206,17 +206,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "avmux"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd7d9a22275377392be350371f3d4fd92188a4ad19883d6783e22929998a6d0c"
-dependencies = [
- "bon",
- "rsmpeg",
- "thiserror 2.0.17",
-]
-
-[[package]]
 name = "aws-lc-rs"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1002,7 +991,6 @@ version = "1.2.3"
 dependencies = [
  "anyhow",
  "api_req",
- "avmux",
  "clap",
  "clap_complete",
  "const_format",
