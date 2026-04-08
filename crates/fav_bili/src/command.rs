@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, Command, command, value_parser};
 use clap_complete::Shell;
+use rustyline::{DefaultEditor, error::ReadlineError};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::{action::*, version::VERSION};
 
 #[derive(Debug, Default)]
-pub struct FavCommand(Command);
+pub struct FavCommand(pub Command);
 
 impl FavCommand {
     pub fn new() -> Self {
@@ -220,6 +222,9 @@ impl FavCommand {
                     Command::new("pull")
                         .about("Pull fetched medias [alias: p]")
                         .aliases(["p"]),
+                    Command::new("resp")
+                        .about("cli -> resp [alias: r]")
+                        .aliases(["r"]),
                     Command::new("clone")
                         .about("download single medias [alias: c]")
                         .aliases(["c"]).args([
@@ -252,10 +257,111 @@ impl FavCommand {
         )
     }
 
+    pub fn initialize_log(&mut self) {
+        let matches = self.0.get_matches_mut();
+        match matches.get_flag("verbose") {
+            true => {
+                let filter =
+                    EnvFilter::from_default_env().add_directive("fav=debug".parse().unwrap());
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_thread_ids(true)
+                    .with_line_number(true)
+                    .init();
+            }
+            false => {
+                let filter =
+                    EnvFilter::from_default_env().add_directive("fav=info".parse().unwrap());
+                tracing_subscriber::fmt()
+                    .with_target(false)
+                    .with_env_filter(filter)
+                    .without_time()
+                    .init();
+            }
+        }
+    }
+
     /// Parse the commands and args, return the Event to trigger.
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run_cli(&mut self) -> Result<()> {
+        self.initialize_log();
+
         let matches = self.0.get_matches_mut();
 
+        if let Some(("resp", _)) = matches.subcommand() {
+            self.run_resp().await?;
+            return Ok(());
+        }
+
+        self.exec_matches(matches).await?;
+
+        Ok(())
+    }
+
+    pub async fn run_resp(&mut self) -> Result<()> {
+        // 初始化 rustyline 编辑器
+        let mut rl = DefaultEditor::new()?;
+        if rl.load_history(".fav_history").is_err() {
+            // 无历史文件则忽略
+        }
+
+        println!("Interactive mode. Type 'exit' or 'quit' to quit.\n");
+
+        loop {
+            let readline = rl.readline("bili_extropy> ");
+            match readline {
+                Ok(line) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    // 处理退出命令
+                    if matches!(line, "exit" | "quit" | "q") {
+                        break;
+                    }
+                    // 解析并执行命令
+                    if let Err(e) = self.execute_line(line).await {
+                        eprintln!("Error: {}", e);
+                    }
+                }
+                Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
+                    // Ctrl+C 或 Ctrl+D 退出
+                    break;
+                }
+                Err(err) => {
+                    eprintln!("Input error: {}", err);
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 解析一行输入并执行对应的异步动作
+    async fn execute_line(&mut self, line: &str) -> Result<()> {
+        // 将输入拆分为类似 argv 的列表
+
+        if line.to_lowercase() == "mushinelament" {
+            info!("!The world is Unworld!");
+            return Ok(());
+        }
+
+        let mut process_name = vec!["bili_extropy".to_string()];
+
+        process_name.extend(shell_words::split(line).context("Failed to parse command")?);
+
+        if process_name.len() <= 1 {
+            return Ok(());
+        }
+
+        let cmd = self.0.clone();
+        let matches = cmd.try_get_matches_from(process_name)?;
+
+        // 执行子命令（完全复用原有 match 逻辑）
+        self.exec_matches(matches).await
+    }
+
+    pub async fn exec_matches(&mut self, matches: clap::ArgMatches) -> Result<()> {
         match matches.subcommand() {
             Some(("completion", sub_matches)) => {
                 let bin_name = std::env::current_exe()
@@ -268,27 +374,6 @@ impl FavCommand {
                 clap_complete::generate(shell, &mut self.0, bin_name, &mut std::io::stdout());
             }
             sub_cmd => {
-                match matches.get_flag("verbose") {
-                    true => {
-                        let filter = EnvFilter::from_default_env()
-                            .add_directive("fav=debug".parse().unwrap());
-                        tracing_subscriber::fmt()
-                            .with_env_filter(filter)
-                            .with_thread_ids(true)
-                            .with_line_number(true)
-                            .init();
-                    }
-                    false => {
-                        let filter = EnvFilter::from_default_env()
-                            .add_directive("fav=info".parse().unwrap());
-                        tracing_subscriber::fmt()
-                            .with_target(false)
-                            .with_env_filter(filter)
-                            .without_time()
-                            .init();
-                    }
-                }
-
                 match sub_cmd {
                     Some(("auth", sub_matches)) => match sub_matches.subcommand() {
                         Some(("login", _)) => login().await?,
@@ -419,7 +504,12 @@ impl FavCommand {
                             only_download(bvid).await?;
                         }
                     }
-                    _ => unreachable!(),
+                    Some(("resp", _)) => {
+                        error!("you already in resp state");
+                    }
+                    _other => {
+                        error!("There is a lawer commands");
+                    }
                 }
             }
         }

@@ -181,7 +181,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
             while let Some(res) = tasks.next().await {
                 match res {
                     Ok(list) => medias.extend(list),
-                    Err(e) => error!("{}", e),
+                    Err(e) => error!("caller: {:?},{}", (file!(), line!()), e),
                 }
             }
             if !medias.is_empty() {
@@ -243,7 +243,9 @@ pub async fn fetch(prune: bool) -> Result<()> {
                             },
                     } = BiliApi::request(InUpPayload::new(up_id, pn, 30).await?)
                         .await
-                        .context(format!("Failed to fetch up space page {pn}"))?;
+                        .map_err(|err| {
+                            anyhow::anyhow!("Failed to fetch up space page {pn}, error: {:?}", err)
+                        })?;
                     Ok::<_, anyhow::Error>(vlist)
                 })
                 .buffer_unordered(8);
@@ -263,7 +265,7 @@ pub async fn fetch(prune: bool) -> Result<()> {
                         title: m.title.to_owned(),
                         r#type: m.r#type.to_string(),
                         state: MediaState::Pending.to_string(),
-                        cid: m.cid,
+                        cid: m.mid,
                     }
                 }))
                 .await?;

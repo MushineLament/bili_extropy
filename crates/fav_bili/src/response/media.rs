@@ -48,8 +48,20 @@ pub struct Media {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct MediaCollection {
+pub struct MediaUp {
     #[serde(alias = "aid")]
+    pub id: i64,
+    #[serde(rename = "bvid")]
+    pub bv_id: String,
+    /// 视频up主cid
+    pub mid: i64,
+    pub title: String,
+    #[serde(default)]
+    pub r#type: MediaType,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MediaCollection {
     pub id: i64,
     #[serde(rename = "bvid")]
     pub bv_id: String,
@@ -58,15 +70,14 @@ pub struct MediaCollection {
     pub title: String,
     #[serde(default)]
     pub r#type: MediaType,
-    #[serde(rename = "cover")]
-    pub _pic: Url,
+    pub cover: Url,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Upper {
     /// up 的cid
     pub mid: i64,
-    pub _name: String,
+    pub name: String,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
