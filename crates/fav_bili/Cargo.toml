@@ -48,10 +48,12 @@ sanitize-filename = { version = "0.6" }
 paste = { version = "1.0" }
 flate2 = "1.0"
 
-migration ={ path = "../migration"}
+migration = { path = "../migration" }
 rsmpeg = { version = "0.18", features = ["ffmpeg8"] }
 
 itertools = "0.14.0"
+rustyline = "18.0.0"
+shell-words = "1.1"
 
 [build-dependencies]
 vergen = { version = "9.0", features = ["rustc"] }

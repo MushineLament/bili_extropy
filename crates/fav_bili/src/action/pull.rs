@@ -109,10 +109,15 @@ pub async fn pull() -> Result<()> {
                 }
             }
         }
+        info!("All tasks is finish");
     };
 
     let join = tokio::spawn(tasks);
-    let _test = join.await?;
+
+    // 让后台任务自己运行，主函数继续或等待退出信号
+    // tokio::signal::ctrl_c().await?;
+
+    join.await?;
 
     info!("Finished pulling");
     Ok(())
