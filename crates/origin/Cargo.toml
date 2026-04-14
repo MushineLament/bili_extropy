@@ -18,8 +18,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = { version = "1.0" }
 const_format = { version = "0.2", features = ["fmt"] }
 dashmap = { version = "6.1" }
-clap = { version = "4.5", features = ["cargo"] }
-clap_complete = { version = "4.5" }
 api_req = { version = "0.4", features = ["cookies"] }
 reqwest = { version = "0.13" }
 url = { version = "2.5", features = ["serde"] }
@@ -55,3 +53,4 @@ bevy-tokio-tasks = "0.18.0"
 itertools = "0.14.0"
 rustyline = "18.0.0"
 shell-words = "1.1"
+argmap = "1.1.2"

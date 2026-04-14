@@ -177,6 +177,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "argmap"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c007f456524f3f1e06e8929963425b5dadf8616d9110ea0809840c16997994e9"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -934,15 +940,6 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
-]
-
-[[package]]
-name = "clap_complete"
-version = "4.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "406e68b4de5c59cfb8f750a7cbd4d31ae153788b8352167c1e5f4fc26e8c91e9"
-dependencies = [
- "clap",
 ]
 
 [[package]]
@@ -2825,10 +2822,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "api_req",
+ "argmap",
  "bevy",
  "bevy-tokio-tasks",
- "clap",
- "clap_complete",
  "const_format",
  "cookie",
  "dashmap",
