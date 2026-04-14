@@ -31,18 +31,6 @@ impl ToTableRecord<4> for collection::CollectionModel {
     }
 }
 
-impl ToTableRecord<5> for media::MediaModel {
-    fn to_record(self) -> [String; 5] {
-        [
-            self.aid.to_string(),
-            self.bv_id,
-            head(self.title, 20),
-            self.r#type.to_string(),
-            self.state.to_string(),
-        ]
-    }
-}
-
 impl ToTableRecord<4> for status::StatusModel {
     fn to_record(self) -> [String; 4] {
         [

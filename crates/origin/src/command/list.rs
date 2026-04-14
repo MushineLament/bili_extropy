@@ -7,11 +7,7 @@ use bevy_tokio_tasks::TokioTasksRuntime;
 use tokio::task::JoinHandle;
 use tracing::error;
 
-use crate::{
-    console::ConsoleMessage,
-    db::Db,
-    entity::{ToTableRecord, media::MediaModel},
-};
+use crate::{console::ConsoleMessage, db::Db, entity::media::MediaModel, table::IntoTable};
 
 #[derive(Debug)]
 pub enum CommandHandleList {
@@ -79,10 +75,8 @@ pub fn list_medias(
                     continue;
                 };
 
-                let table = crate::table::table(
-                    ["id", "bvid", "title", "type", "state"],
-                    medias.into_iter().map(ToTableRecord::to_record),
-                );
+                let table = medias.table_head(["id", "bvid", "title", "type", "state"]);
+
                 println!("{}\nrows: {}", table, table.count_rows() - 1);
             }
         }
