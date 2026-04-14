@@ -1,16 +1,17 @@
 use anyhow::Result;
 use bevy::{
-    app::{Plugin, PreUpdate},
+    app::{AppExit, Plugin, PreUpdate, Startup},
     ecs::{
         change_detection::MaybeLocation,
-        event::Event,
+        message::Message,
         resource::Resource,
         system::{Commands, ResMut},
     },
     prelude::{Deref, DerefMut},
-    tasks::{IoTaskPool, Task},
 };
+use bevy_tokio_tasks::TokioTasksRuntime;
 use rustyline::DefaultEditor;
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 pub const APP_NAME: &str = "bili_extropy_ecs";
@@ -53,13 +54,11 @@ impl Default for Console {
     }
 }
 
-#[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ConsoleReadTask(pub Task<(Console, Vec<String>)>);
+#[derive(Debug, Resource, Deref, DerefMut, Default)]
+pub struct ConsoleReadTask(pub Option<JoinHandle<ConsoleCommand>>);
 
 impl ConsoleReadTask {
-    pub fn as_task(console: Console) -> Self {
-        let async_tasks = IoTaskPool::get();
-
+    pub fn as_task(console: Console, runtimer: &mut TokioTasksRuntime) -> Self {
         let console_task = async move {
             let mut console = console;
 
@@ -72,7 +71,7 @@ impl ConsoleReadTask {
 
                 // quit process command
                 if matches!(line, "exit" | "quit" | "q") {
-                    todo!("PS:quit process command");
+                    return ConsoleCommand::Exit;
                 }
 
                 info!("读到命令:{:?}", line);
@@ -83,7 +82,7 @@ impl ConsoleReadTask {
                         continue;
                     }
                     Ok(trims) => {
-                        return (console, trims);
+                        return ConsoleCommand::Trims((console, trims));
                     }
                     Err(err) => {
                         error!("trims error:{:?}", err);
@@ -92,37 +91,69 @@ impl ConsoleReadTask {
                 };
             }
         };
-        ConsoleReadTask(async_tasks.spawn(console_task))
+
+        let task = runtimer.spawn_background_task(|_ctx| console_task);
+
+        Self(Some(task))
     }
 }
 
-impl Default for ConsoleReadTask {
-    fn default() -> Self {
-        let console = Console::default();
-        Self::as_task(console)
-    }
-}
+#[derive(Debug, Message, Deref, DerefMut, Clone)]
+pub struct ConsoleMessage(pub Vec<String>);
 
-#[derive(Debug, Event, Deref, DerefMut)]
-pub struct ConsoleTrigger(pub Vec<String>);
+#[derive(Debug)]
+pub enum ConsoleCommand {
+    Trims((Console, Vec<String>)),
+    Exit,
+}
 
 pub struct ConsolePlugin;
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.init_resource::<ConsoleReadTask>()
-            .add_systems(PreUpdate, run_resp);
+            .add_message::<ConsoleMessage>()
+            .add_systems(Startup, console_initalize)
+            .add_systems(PreUpdate, console_task);
     }
 }
 
-fn run_resp(mut commands: Commands, mut task: ResMut<ConsoleReadTask>) {
-    if !task.0.is_finished() {
+fn console_initalize(mut input: ResMut<ConsoleReadTask>, mut runtimer: ResMut<TokioTasksRuntime>) {
+    if input.is_some() {
         return;
     }
 
-    let (console, trims) = bevy::tasks::block_on(&mut task.0);
+    *input = ConsoleReadTask::as_task(Console::default(), &mut runtimer);
+}
 
-    commands.trigger(ConsoleTrigger(trims));
+fn console_task(
+    mut commands: Commands,
+    mut input: ResMut<ConsoleReadTask>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+) {
+    let Some(handle) = input.take() else {
+        error!("console lose, respawn a default");
+        *input = ConsoleReadTask::as_task(Console::default(), &mut runtimer);
+        return;
+    };
 
-    *task = ConsoleReadTask::as_task(console);
+    if !handle.is_finished() {
+        let _handle = input.insert(handle);
+        return;
+    }
+
+    let Ok(result) = bevy::tasks::block_on(handle) else {
+        return;
+    };
+
+    match result {
+        ConsoleCommand::Trims((console, trims)) => {
+            commands.write_message(ConsoleMessage(trims));
+            *input = ConsoleReadTask::as_task(console, &mut runtimer);
+        }
+        ConsoleCommand::Exit => {
+            info!("custom input app exit command");
+            commands.write_message(AppExit::Success);
+        }
+    }
 }
