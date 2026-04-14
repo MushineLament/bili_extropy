@@ -1,6 +1,6 @@
 use sea_orm::entity::prelude::*;
 
-use crate::entity::ToTableRecord;
+use crate::table::ToTableRecord;
 
 type Entity = MediaEntity;
 type Model = MediaModel;

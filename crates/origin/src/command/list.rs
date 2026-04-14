@@ -7,7 +7,7 @@ use bevy_tokio_tasks::TokioTasksRuntime;
 use tokio::task::JoinHandle;
 use tracing::error;
 
-use crate::{console::ConsoleMessage, db::Db, entity::media::MediaModel, table::IntoTable};
+use crate::{console::ConsoleMessage, db::Db, entity::media::MediaModel, table::ToTable};
 
 #[derive(Debug)]
 pub enum CommandHandleList {

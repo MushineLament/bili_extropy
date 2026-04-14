@@ -2,6 +2,8 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::table::ToTableRecord;
+
 type Entity = StatusEntity;
 type Model = StatusModel;
 
@@ -21,6 +23,17 @@ pub struct StatusModel {
     pub name: String,
     pub path: String,
     pub state: String,
+}
+
+impl ToTableRecord<4> for StatusModel {
+    fn to_record(self) -> [String; 4] {
+        [
+            self.id.unwrap_or(-1).to_string(),
+            self.state,
+            self.name,
+            self.path,
+        ]
+    }
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]

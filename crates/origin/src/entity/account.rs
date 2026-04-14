@@ -2,6 +2,8 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::table::ToTableRecord;
+
 type Entity = AccountEntity;
 type Model = AccountModel;
 
@@ -20,6 +22,12 @@ pub struct AccountModel {
     pub name: String,
     pub cookies: String,
     pub state: String,
+}
+
+impl ToTableRecord<3> for AccountModel {
+    fn to_record(self) -> [String; 3] {
+        [self.account_id.to_string(), self.name, self.state]
+    }
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]

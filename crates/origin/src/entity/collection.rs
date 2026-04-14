@@ -2,6 +2,8 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::table::ToTableRecord;
+
 type Entity = CollectionEntity;
 type Model = CollectionModel;
 
@@ -20,6 +22,17 @@ pub struct CollectionModel {
     pub name: String,
     pub count: i64,
     pub state: String,
+}
+
+impl ToTableRecord<4> for CollectionModel {
+    fn to_record(self) -> [String; 4] {
+        [
+            self.collection_id.to_string(),
+            self.name,
+            self.count.to_string(),
+            self.state,
+        ]
+    }
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]

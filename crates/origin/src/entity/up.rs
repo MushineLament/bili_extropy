@@ -2,6 +2,8 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::{entity::UpperCid, table::ToTableRecord};
+
 #[derive(Copy, Clone, Default, Debug, DeriveEntity)]
 pub struct Entity;
 
@@ -13,9 +15,15 @@ impl EntityName for Entity {
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct Model {
-    pub up_id: i64,
+    pub up_id: UpperCid,
     pub name: String,
     pub state: String,
+}
+
+impl ToTableRecord<3> for Model {
+    fn to_record(self) -> [String; 3] {
+        [self.up_id.to_string(), self.name, self.state]
+    }
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
