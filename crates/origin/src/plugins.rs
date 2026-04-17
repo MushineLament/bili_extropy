@@ -5,7 +5,11 @@ use bevy::{
 };
 use bevy_tokio_tasks::TokioTasksPlugin;
 
-use crate::{command::CommandPlugin, console::ConsolePlugin, db::DbPlugin};
+use crate::{
+    command::{CommandPlugin, clone::DownloadPlugin},
+    console::ConsolePlugin,
+    db::DbPlugin,
+};
 
 pub struct MainPlugin;
 
@@ -16,6 +20,7 @@ impl Plugin for MainPlugin {
             .add_plugins(TokioTasksPlugin::default())
             .add_plugins(ConsolePlugin)
             .add_plugins(CommandPlugin)
+            .add_plugins(DownloadPlugin)
             .add_plugins(DbPlugin);
     }
 }

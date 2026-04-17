@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.18.1", default-features = false, features = ["bevy_log"] }
+bevy = { version = "0.18.1", default-features = false, features = [
+    "bevy_log",
+    "track_location",
+] }
 tokio = { version = "1", default-features = false, features = [
     "macros",
     "rt-multi-thread",
@@ -54,3 +57,4 @@ itertools = "0.14.0"
 rustyline = "18.0.0"
 shell-words = "1.1"
 argmap = "1.1.2"
+strum = { version = "0.28.0", features = ["derive"] }

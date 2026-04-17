@@ -6,13 +6,13 @@ use migration::{Migrator, MigratorTrait as _};
 use sea_orm::{Database, DatabaseConnection};
 use tokio::runtime::Runtime;
 
-mod medias;
+pub mod status;
 
 pub const DB_PATH: &str = ".bili_extropy_ecs/bili_extropy_ecs.db";
 
 #[derive(Debug, Clone, Resource)]
 pub struct Db {
-    db: DatabaseConnection,
+    pub db: DatabaseConnection,
 }
 
 impl Db {

@@ -10,7 +10,7 @@ use bevy::{
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use rustyline::DefaultEditor;
+use rustyline::{DefaultEditor, error::ReadlineError};
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
@@ -63,7 +63,14 @@ impl ConsoleReadTask {
             let mut console = console;
 
             loop {
-                let Ok(line) = console.readline("bili_extropy_ecs> ") else {
+                let readline = console.readline("bili_extropy_ecs> ");
+
+                if let Err(ReadlineError::Interrupted) = readline {
+                    info!("收到中断信号 (Ctrl+C)，正在退出...");
+                    return ConsoleCommand::Exit;
+                }
+
+                let Ok(line) = readline else {
                     continue;
                 };
 

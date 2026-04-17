@@ -1,36 +1,52 @@
-use anyhow::Result;
-use bevy::ecs::{
-    message::MessageReader,
-    system::{Local, Res, ResMut},
+use bevy::{
+    app::{Plugin, PostStartup, Update},
+    ecs::{
+        entity::Entity,
+        message::MessageReader,
+        schedule::IntoScheduleConfigs,
+        system::{Commands, Query, Res, ResMut},
+        world::World,
+    },
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use tokio::task::JoinHandle;
 use tracing::error;
 
-use crate::{console::ConsoleMessage, db::Db, entity::media::MediaModel, table::ToTable};
+use crate::{
+    components::{
+        download::DownloadHandle,
+        initialize::DbInitailizeResource,
+        list::handle::{ListAccountTask, ListMedias},
+    },
+    console::ConsoleMessage,
+    db::Db,
+    table::ToTable,
+};
 
-#[derive(Debug)]
-pub enum CommandHandleList {
-    Medias(JoinHandle<Result<Vec<MediaModel>>>),
-}
+pub struct CommandListPlugin;
 
-impl CommandHandleList {
-    pub fn is_finished(&self) -> bool {
-        match self {
-            CommandHandleList::Medias(join_handle) => join_handle.is_finished(),
-        }
+impl Plugin for CommandListPlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        app.add_systems(PostStartup, ListMedias::new.to_system())
+            .add_systems(
+                Update,
+                (
+                    spawn_list_task,
+                    list_account_finished.after(spawn_list_task),
+                ),
+            );
     }
 }
 
-pub fn list_medias(
+pub fn spawn_list_task(
+    mut commands: Commands,
     db: Res<Db>,
-    runtimer: ResMut<TokioTasksRuntime>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
     mut console_message: MessageReader<ConsoleMessage>,
-    mut local: Local<Vec<CommandHandleList>>,
+    query: Query<&mut DownloadHandle>,
+    listmedias: Res<ListMedias>,
 ) {
     for message in console_message.read() {
-        let db = db.clone();
-        let message = message.clone();
+        let _db = db.clone();
         let (args, _argv) = argmap::parse(message.0.iter());
 
         if !args.get(1).is_some_and(|list| list.eq("list")) {
@@ -38,11 +54,28 @@ pub fn list_medias(
         }
 
         match args.get(2).map(String::as_str) {
+            Some("account") => {
+                commands.spawn(ListAccountTask::new(db.clone(), runtimer.as_mut()));
+            }
             Some("medias") => {
-                let medias = runtimer
-                    .spawn_background_task(move |_ctx| async move { db.all_medias().await });
+                let table = match listmedias.get_result() {
+                    Ok(result) => result
+                        .iter()
+                        .table_head(["id", "bvid", "title", "type", "state"]),
+                    Err(err) => {
+                        error!("list medias error:{:?}", err);
+                        commands.queue(|world: &mut World| {
+                            let _ = world.resource_mut::<ListMedias>().try_result();
+                        });
+                        continue;
+                    }
+                };
 
-                local.push(CommandHandleList::Medias(medias));
+                println!("{}\nrows: {}", table, table.count_rows() - 1);
+            }
+            Some("download") => {
+                let count = query.count();
+                println!("count: {}", count);
             }
             Some(unkown) => {
                 error!("not has this command: {:?}", unkown);
@@ -52,35 +85,16 @@ pub fn list_medias(
             }
         }
     }
+}
 
-    let mut tmp = vec![];
-
-    while let Some(handle) = local.pop() {
-        if !handle.is_finished() {
-            tmp.push(handle);
+pub fn list_account_finished(mut commands: Commands, query: Query<(&mut ListAccountTask, Entity)>) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
             continue;
-        }
+        };
+        commands.entity(entity).despawn();
 
-        match handle {
-            CommandHandleList::Medias(join_handle) => {
-                let Ok(result) = bevy::tasks::block_on(join_handle).map_err(|err| {
-                    error!("list command joinhandle error:{:?}", err);
-                }) else {
-                    continue;
-                };
-
-                let Ok(medias) = result.map_err(|err| {
-                    error!("query sql db list medias error:{:?}", err);
-                }) else {
-                    continue;
-                };
-
-                let table = medias.table_head(["id", "bvid", "title", "type", "state"]);
-
-                println!("{}\nrows: {}", table, table.count_rows() - 1);
-            }
-        }
+        let table = result.iter().table_head(["account_id", "name", "state"]);
+        println!("{}\nrows: {}", table, table.count_rows() - 1);
     }
-
-    local.extend(tmp);
 }
