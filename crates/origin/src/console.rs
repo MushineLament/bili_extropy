@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use bevy::{
     app::{AppExit, Plugin, PreUpdate, Startup},
@@ -11,8 +13,9 @@ use bevy::{
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
 use rustyline::{DefaultEditor, error::ReadlineError};
-use tokio::task::JoinHandle;
 use tracing::{error, info};
+
+use crate::components::handle::{DbHandle, DbHandleError};
 
 pub const APP_NAME: &str = "bili_extropy_ecs";
 
@@ -54,11 +57,27 @@ impl Default for Console {
     }
 }
 
-#[derive(Debug, Resource, Deref, DerefMut, Default)]
-pub struct ConsoleReadTask(pub Option<JoinHandle<ConsoleCommand>>);
+#[derive(Debug, Resource, Deref, DerefMut)]
+pub struct ConsoleReadTask {
+    #[deref]
+    pub handle: Option<DbHandle<ConsoleResult>>,
+    pub error: Option<ConsoleResultError>,
+    pub result: Option<ConsoleCommand>,
+}
 
 impl ConsoleReadTask {
-    pub fn as_task(console: Console, runtimer: &mut TokioTasksRuntime) -> Self {
+    pub fn new(console: Console, runtimer: &mut TokioTasksRuntime) -> Self {
+        Self {
+            handle: Some(DbHandle::new(Self::spawn_task(console, runtimer))),
+            error: None,
+            result: None,
+        }
+    }
+
+    pub fn spawn_task(
+        console: Console,
+        runtimer: &mut TokioTasksRuntime,
+    ) -> tokio::task::JoinHandle<ConsoleResult> {
         let console_task = async move {
             let mut console = console;
 
@@ -67,7 +86,10 @@ impl ConsoleReadTask {
 
                 if let Err(ReadlineError::Interrupted) = readline {
                     info!("收到中断信号 (Ctrl+C)，正在退出...");
-                    return ConsoleCommand::Exit;
+                    return ConsoleResult {
+                        console,
+                        command: ConsoleCommand::Exit,
+                    };
                 }
 
                 let Ok(line) = readline else {
@@ -78,7 +100,10 @@ impl ConsoleReadTask {
 
                 // quit process command
                 if matches!(line, "exit" | "quit" | "q") {
-                    return ConsoleCommand::Exit;
+                    return ConsoleResult {
+                        console,
+                        command: ConsoleCommand::Exit,
+                    };
                 }
 
                 info!("读到命令:{:?}", line);
@@ -89,7 +114,10 @@ impl ConsoleReadTask {
                         continue;
                     }
                     Ok(trims) => {
-                        return ConsoleCommand::Trims((console, trims));
+                        return ConsoleResult {
+                            console,
+                            command: ConsoleCommand::Trims(Cow::Owned(trims)),
+                        };
                     }
                     Err(err) => {
                         error!("trims error:{:?}", err);
@@ -99,18 +127,74 @@ impl ConsoleReadTask {
             }
         };
 
-        let task = runtimer.spawn_background_task(|_ctx| console_task);
+        runtimer.spawn_background_task(|_ctx| console_task)
+    }
 
-        Self(Some(task))
+    pub fn try_repeat(
+        &mut self,
+        runtimer: &mut TokioTasksRuntime,
+    ) -> Result<&ConsoleCommand, &ConsoleResultError> {
+        let Some(mut task) = self.handle.take() else {
+            if self.error.is_none() {
+                let _ = self.error.insert(ConsoleResultError::ConsoleEmpty);
+            }
+            return Err(&ConsoleResultError::ConsoleEmpty);
+        };
+
+        if task.try_result().is_err_and(|err| !err.is_finished()) {
+            let _ = self.handle.insert(task);
+            return Err(&ConsoleResultError::NotFinished);
+        };
+
+        match task.take_result() {
+            Ok(ConsoleResult {
+                console: _,
+                command: ConsoleCommand::Exit,
+            }) => Ok(self.result.insert(ConsoleCommand::Exit)),
+            Ok(ConsoleResult { console, command }) => {
+                self.handle = Some(DbHandle::new(Self::spawn_task(console, runtimer)));
+
+                Ok(self.result.insert(command))
+            }
+            Err(err) => {
+                let error = self
+                    .error
+                    .get_or_insert(ConsoleResultError::DbHandleError(err));
+
+                error!("console read task error:{:?}", error);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn error(&self) -> Option<&ConsoleResultError> {
+        self.error.as_ref()
+    }
+
+    pub fn get_last_command(&self) -> Option<ConsoleCommand> {
+        self.result.clone()
     }
 }
 
 #[derive(Debug, Message, Deref, DerefMut, Clone)]
-pub struct ConsoleMessage(pub Vec<String>);
+pub struct ConsoleTrims(pub Cow<'static, Vec<String>>);
 
 #[derive(Debug)]
+pub struct ConsoleResult {
+    pub console: Console,
+    pub command: ConsoleCommand,
+}
+
+#[derive(Debug)]
+pub enum ConsoleResultError {
+    DbHandleError(DbHandleError<()>),
+    ConsoleEmpty,
+    NotFinished,
+}
+
+#[derive(Debug, Clone)]
 pub enum ConsoleCommand {
-    Trims((Console, Vec<String>)),
+    Trims(Cow<'static, Vec<String>>),
     Exit,
 }
 
@@ -118,19 +202,14 @@ pub struct ConsolePlugin;
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.init_resource::<ConsoleReadTask>()
-            .add_message::<ConsoleMessage>()
+        app.add_message::<ConsoleTrims>()
             .add_systems(Startup, console_initalize)
             .add_systems(PreUpdate, console_task);
     }
 }
 
-fn console_initalize(mut input: ResMut<ConsoleReadTask>, mut runtimer: ResMut<TokioTasksRuntime>) {
-    if input.is_some() {
-        return;
-    }
-
-    *input = ConsoleReadTask::as_task(Console::default(), &mut runtimer);
+fn console_initalize(mut commands: Commands, mut runtimer: ResMut<TokioTasksRuntime>) {
+    commands.insert_resource(ConsoleReadTask::new(Console::default(), &mut runtimer));
 }
 
 fn console_task(
@@ -138,25 +217,13 @@ fn console_task(
     mut input: ResMut<ConsoleReadTask>,
     mut runtimer: ResMut<TokioTasksRuntime>,
 ) {
-    let Some(handle) = input.take() else {
-        error!("console lose, respawn a default");
-        *input = ConsoleReadTask::as_task(Console::default(), &mut runtimer);
-        return;
-    };
-
-    if !handle.is_finished() {
-        let _handle = input.insert(handle);
-        return;
-    }
-
-    let Ok(result) = bevy::tasks::block_on(handle) else {
+    let Ok(result) = input.try_repeat(runtimer.as_mut()) else {
         return;
     };
 
     match result {
-        ConsoleCommand::Trims((console, trims)) => {
-            commands.write_message(ConsoleMessage(trims));
-            *input = ConsoleReadTask::as_task(console, &mut runtimer);
+        ConsoleCommand::Trims(trims) => {
+            commands.write_message(ConsoleTrims(trims.clone()));
         }
         ConsoleCommand::Exit => {
             info!("custom input app exit command");

@@ -50,6 +50,11 @@ impl<O, T, E> DbHandleInner<O, T, E> {
         self.data.as_mut().map_err(|err| &*err)
     }
 
+    /// not any check,wrap!
+    pub fn take_result(self) -> Result<T, DbHandleError<E>> {
+        self.data
+    }
+
     pub fn is_finished(&self) -> bool {
         match self.data.as_ref() {
             Ok(_) => true,

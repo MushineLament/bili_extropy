@@ -17,7 +17,7 @@ use crate::{
         initialize::DbInitailizeResource,
         list::handle::{ListAccountTask, ListMedias},
     },
-    console::ConsoleMessage,
+    console::ConsoleTrims,
     db::Db,
     table::ToTable,
 };
@@ -41,7 +41,7 @@ pub fn spawn_list_task(
     mut commands: Commands,
     db: Res<Db>,
     mut runtimer: ResMut<TokioTasksRuntime>,
-    mut console_message: MessageReader<ConsoleMessage>,
+    mut console_message: MessageReader<ConsoleTrims>,
     query: Query<&mut DownloadHandle>,
     listmedias: Res<ListMedias>,
 ) {

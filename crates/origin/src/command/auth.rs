@@ -13,7 +13,7 @@ use crate::{
         auth::handle::{ActiveAccounts, AuthLoginTask},
         initialize::DbInitailizeResource as _,
     },
-    console::ConsoleMessage,
+    console::ConsoleTrims,
     db::Db,
 };
 
@@ -30,7 +30,7 @@ pub fn command_login(
     mut commands: Commands,
     db: Res<Db>,
     mut runtimer: ResMut<TokioTasksRuntime>,
-    mut console_message: MessageReader<ConsoleMessage>,
+    mut console_message: MessageReader<ConsoleTrims>,
 ) {
     for message in console_message.read() {
         let db = db.clone();

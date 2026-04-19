@@ -5,7 +5,7 @@ use bevy::{
 
 use tracing::error;
 
-use crate::{console::ConsoleMessage, db::Db};
+use crate::{console::ConsoleTrims, db::Db};
 
 pub struct CommandFetchPlugin;
 
@@ -16,7 +16,7 @@ impl Plugin for CommandFetchPlugin {
 }
 
 pub fn spawn_fetch_task(
-    mut console_message: MessageReader<ConsoleMessage>,
+    mut console_message: MessageReader<ConsoleTrims>,
     // db: Res<Db>,
     // mut commands: Commands,
     // mut runtimer: ResMut<TokioTasksRuntime>,

@@ -16,7 +16,7 @@ use crate::{
         auth::handle::ActiveAccounts,
         download::{DownloadHandle, DownloadList, DownloadWay},
     },
-    console::ConsoleMessage,
+    console::ConsoleTrims,
     db::Db,
 };
 pub struct DownloadPlugin;
@@ -36,7 +36,7 @@ impl Plugin for DownloadPlugin {
 }
 
 pub fn upsert_download_list(
-    mut console_message: MessageReader<ConsoleMessage>,
+    mut console_message: MessageReader<ConsoleTrims>,
     mut lists: ResMut<DownloadList>,
 ) {
     for message in console_message.read() {

@@ -14,7 +14,7 @@ use crate::{
         initialize::DbInitailizeResource,
         status::handle::{ActiveStatus, AddStatusTask, StatusState},
     },
-    console::ConsoleMessage,
+    console::ConsoleTrims,
     db::Db,
     table::ToTable,
 };
@@ -31,7 +31,7 @@ impl Plugin for CommandStatusPlugin {
 pub fn spawn_status_task(
     mut commads: Commands,
     db: Res<Db>,
-    mut console_message: MessageReader<ConsoleMessage>,
+    mut console_message: MessageReader<ConsoleTrims>,
     mut runtimer: ResMut<TokioTasksRuntime>,
     res: Res<ActiveStatus>,
 ) {
