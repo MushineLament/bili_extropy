@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use bevy::{
     ecs::{component::Component, resource::Resource},
@@ -14,8 +16,15 @@ use crate::{
     entity::status::{self, StatusActiveModel, StatusEntity, StatusModel},
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, EnumString, Display)]
+pub enum StatusState {
+    Active,
+    Inactive,
+    Switch,
+}
+
 #[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ActiveStatus(pub DbHandleResult<Vec<StatusModel>, anyhow::Error>);
+pub struct ActiveStatus(pub DbHandleResult<Cow<'static, Vec<StatusModel>>, anyhow::Error>);
 
 impl ActiveStatus {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
@@ -24,20 +33,13 @@ impl ActiveStatus {
                 .filter(status::Column::State.eq(StatusState::Active.to_string()))
                 .all(&db.db)
                 .await?;
-            Ok(task)
+            Ok(Cow::Owned(task))
         };
 
         let handle = runtimer.spawn_background_task(|_ctx| task);
 
         Self(DbHandleResult::new(handle))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, EnumString, Display)]
-pub enum StatusState {
-    Active,
-    Inactive,
-    Switch,
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]

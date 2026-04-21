@@ -134,16 +134,18 @@ impl ConsoleReadTask {
         &mut self,
         runtimer: &mut TokioTasksRuntime,
     ) -> Result<&ConsoleCommand, &ConsoleResultError> {
-        let Some(mut task) = self.handle.take() else {
+        if self.handle.as_mut().is_some_and(|handle| {
+            let _ = handle.try_result();
+            !handle.is_finished()
+        }) {
+            return Err(&ConsoleResultError::NotFinished);
+        }
+
+        let Some(task) = self.handle.take() else {
             if self.error.is_none() {
                 let _ = self.error.insert(ConsoleResultError::ConsoleEmpty);
             }
             return Err(&ConsoleResultError::ConsoleEmpty);
-        };
-
-        if task.try_result().is_err_and(|err| !err.is_finished()) {
-            let _ = self.handle.insert(task);
-            return Err(&ConsoleResultError::NotFinished);
         };
 
         match task.take_result() {

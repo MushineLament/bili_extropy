@@ -1,11 +1,11 @@
 use bevy::{
     app::{Plugin, Update},
-    ecs::{message::MessageReader, system::Res},
+    ecs::message::MessageReader,
 };
 
 use tracing::error;
 
-use crate::{console::ConsoleTrims, db::Db};
+use crate::console::ConsoleTrims;
 
 pub struct CommandFetchPlugin;
 

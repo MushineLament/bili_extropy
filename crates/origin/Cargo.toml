@@ -7,6 +7,7 @@ edition = "2024"
 bevy = { version = "0.18.1", default-features = false, features = [
     "bevy_log",
     "track_location",
+    "trace",
 ] }
 tokio = { version = "1", default-features = false, features = [
     "macros",
@@ -21,7 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = { version = "1.0" }
 const_format = { version = "0.2", features = ["fmt"] }
 dashmap = { version = "6.1" }
-api_req = { version = "0.4", features = ["cookies"] }
+api_req = { version = "0.5.2", features = ["cookies"] }
 reqwest = { version = "0.13" }
 url = { version = "2.5", features = ["serde"] }
 cookie = { version = "0.18" }
@@ -29,10 +30,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 serde_urlencoded = { version = "0.7" }
 qrcode = { version = "0.14", default-features = false }
-tabled = { version = "0.19" }
-indicatif = { version = "0.17" }
+tabled = { version = "0.20.0" }
+indicatif = { version = "0.18.4" }
 unicode-width = { version = "0.2" }
-md5 = { version = "0.7" }
+md5 = { version = "0.8.0" }
 hex = { version = "0.4" }
 ring = { version = "0.17" }
 sea-orm = { version = "1.1", features = [

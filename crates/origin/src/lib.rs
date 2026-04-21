@@ -6,7 +6,7 @@ pub mod table;
 
 pub mod api;
 pub mod cookies;
-pub mod normalization;
+pub mod output;
 pub mod payload;
 pub mod response;
 pub mod state;
