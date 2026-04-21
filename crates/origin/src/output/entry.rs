@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -69,6 +71,46 @@ pub struct EntryOuput {
     pub page_data: EntryPageData,
     /// 剧集信息（非番剧为/ null）。
     pub ep: Option<String>,
+}
+
+impl Default for EntryOuput {
+    fn default() -> Self {
+        Self {
+            cover: Url::from_str("http://127.0.0.0/").expect("not a 127.0.0.0"),
+            media_type: Default::default(),
+            has_dash_audio: Default::default(),
+            is_completed: Default::default(),
+            total_bytes: Default::default(),
+            downloaded_bytes: Default::default(),
+            title: Default::default(),
+            type_tag: Default::default(),
+            video_quality: Default::default(),
+            prefered_video_quality: Default::default(),
+            guessed_total_bytes: Default::default(),
+            total_time_milli: Default::default(),
+            danmaku_count: Default::default(),
+            time_update_stamp: Default::default(),
+            time_create_stamp: Default::default(),
+            can_play_in_advance: Default::default(),
+            interrupt_transform_temp_file: Default::default(),
+            quality_pithy_description: Default::default(),
+            quality_superscript: Default::default(),
+            variable_resolution_ratio: Default::default(),
+            cache_version_code: Default::default(),
+            preferred_audio_quality: Default::default(),
+            audio_quality: Default::default(),
+            avid: Default::default(),
+            spid: Default::default(),
+            season_id: Default::default(),
+            bvid: Default::default(),
+            owner_id: Default::default(),
+            owner_name: Default::default(),
+            is_charge_video: Default::default(),
+            verification_code: Default::default(),
+            page_data: Default::default(),
+            ep: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

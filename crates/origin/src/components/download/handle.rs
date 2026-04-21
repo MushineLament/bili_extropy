@@ -2,36 +2,10 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     hash::Hash,
-    io::{self, Read as _, Write as _},
+    io::{self, Write as _},
     mem,
     path::{Path, PathBuf},
-    pin::Pin,
-    str::FromStr,
-    sync::Arc,
 };
-
-use anyhow::{Context, Result, anyhow};
-use api_req::{ApiCaller as _, error::ApiErr};
-use bevy::{
-    ecs::{change_detection::MaybeLocation, component::Component},
-    platform::collections::{HashMap, HashSet, hash_map},
-    prelude::{Deref, DerefMut},
-};
-use bevy_tokio_tasks::TokioTasksRuntime;
-use futures::TryFutureExt;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use migration::OnConflict;
-use reqwest::{
-    IntoUrl, Response,
-    header::{CONTENT_LENGTH, HeaderValue},
-};
-use sea_orm::{
-    ActiveValue::{Set, Unchanged},
-    EntityTrait as _, IntoActiveModel as _,
-};
-use tempfile::NamedTempFile;
-use tracing::{error, info, warn};
-use url::Url;
 
 use crate::{
     api::BiliApi,
@@ -48,9 +22,28 @@ use crate::{
     },
     output::{EntryOuput, EntryPageData, IndexAudio, IndexOuput, IndexVideo},
     payload::DashPayload,
-    response::{self, Dash, DashData, DashResp},
+    response::{Dash, DashData, DashResp},
     state::MediaState,
 };
+use anyhow::{Context, Result, anyhow};
+use api_req::{ApiCaller as _, error::ApiErr};
+use bevy::{
+    ecs::{change_detection::MaybeLocation, component::Component},
+    platform::collections::{HashMap, HashSet, hash_map},
+    prelude::{Deref, DerefMut},
+};
+use bevy_tokio_tasks::TokioTasksRuntime;
+use futures::TryFutureExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use migration::OnConflict;
+use reqwest::{IntoUrl, Response, header::CONTENT_LENGTH};
+use sea_orm::{
+    ActiveValue::{Set, Unchanged},
+    EntityTrait as _, IntoActiveModel as _,
+};
+use tempfile::NamedTempFile;
+use tracing::{error, info, warn};
+use url::Url;
 
 const BAR_TEMPLATE: &str = "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})";
 
@@ -205,10 +198,9 @@ pub async fn download(
             if !path.exists() {
                 if let Err(err) = fs::create_dir_all(path) {
                     error!(
-                        "create directoy error: {:?},file: {:?}, line: {:?}",
+                        "create directoy error: {:?},caller: {:?}",
                         err,
-                        file!(),
-                        line!()
+                        MaybeLocation::caller()
                     )
                 }
                 return false;
@@ -216,9 +208,8 @@ pub async fn download(
 
             if !path.is_dir() {
                 error!(
-                    "The path is not a directory,file: {:?}, line: {:?}",
-                    file!(),
-                    line!()
+                    "The path is not a directory,caller: {:?}",
+                    MaybeLocation::caller()
                 );
 
                 return false;
@@ -228,8 +219,8 @@ pub async fn download(
         })
         .collect::<Vec<_>>();
 
-    let file_icon = DownloadFile::task(
-        response.pic.clone(),
+    let file_icon = DownloadFileResponse::from_url(
+        response.pic.as_str(),
         NamedTempFile::new_in(tmp_path).map_err(|err| {
             anyhow::anyhow!(
                 "can't not download temp file err: {:?},caller: {:?}",
@@ -237,8 +228,9 @@ pub async fn download(
                 (file!(), line!())
             )
         })?,
-        None,
     )
+    .await?
+    .task()
     .await?;
 
     let MediaInfoResp {
@@ -323,8 +315,6 @@ pub async fn download(
             )
         })?;
 
-        let hv2u64 = |hv: &HeaderValue| -> u64 { hv.to_str().unwrap().parse().unwrap() };
-
         let mut video = video.into_iter();
         let mut audio = audio.into_iter();
 
@@ -340,10 +330,6 @@ pub async fn download(
 
         let file_video = match v.as_ref() {
             Some(v) => {
-                let response = BiliApi::client().get(v.base_url.as_str()).send().await?;
-                let size = hv2u64(&response.headers()[CONTENT_LENGTH]);
-                pb.inc_length(size);
-
                 let tmp = NamedTempFile::new_in(tmp_path).map_err(|err| {
                     anyhow::anyhow!(
                         "can't not download temp file err: {:?},caller: {:?}",
@@ -351,11 +337,21 @@ pub async fn download(
                         MaybeLocation::caller()
                     )
                 })?;
-                let tmp = DownloadFile::task_by_response(response, tmp, Some(pb.clone())).await?;
+                let file_video =
+                    DownloadFilePending::new_with_bg(v.base_url.as_str(), tmp, pb.clone())?
+                        .into_response()
+                        .await?
+                        .with_pb(|pg, response, _| {
+                            let hv = &response.headers()[CONTENT_LENGTH].clone();
+                            let str = hv.to_str().unwrap_or("");
+                            let size = str.parse().unwrap_or_default();
 
-                let file_video = tmp
-                    .reopen()
-                    .map(|file| TempFileToName::new("video.m4s", file))?;
+                            pg.inc_length(size);
+                        })
+                        .task()
+                        .await?
+                        .reopen()
+                        .map(|file| TempFileToName::new("video.m4s", file))?;
 
                 Some(file_video)
             }
@@ -364,11 +360,6 @@ pub async fn download(
 
         let file_audio = match a.as_ref() {
             Some(a) => {
-                let response = BiliApi::client().get(a.base_url.as_str()).send().await?;
-                let size = hv2u64(&response.headers()[CONTENT_LENGTH]);
-
-                pb.inc_length(size);
-
                 let tmp = NamedTempFile::new_in(tmp_path).map_err(|err| {
                     anyhow::anyhow!(
                         "can't not download temp file err: {:?},caller: {:?}",
@@ -377,11 +368,21 @@ pub async fn download(
                     )
                 })?;
 
-                let tmp = DownloadFile::task_by_response(response, tmp, Some(pb.clone())).await?;
+                let file_audio =
+                    DownloadFilePending::new_with_bg(a.base_url.as_str(), tmp, pb.clone())?
+                        .into_response()
+                        .await?
+                        .with_pb(|pg, response, _| {
+                            let hv = &response.headers()[CONTENT_LENGTH];
+                            let str = hv.to_str().unwrap_or("");
+                            let size = str.parse().unwrap_or_default();
 
-                let file_audio = tmp
-                    .reopen()
-                    .map(|file| TempFileToName::new("audio.m4s", file))?;
+                            pg.inc_length(size);
+                        })
+                        .task()
+                        .await?
+                        .reopen()
+                        .map(|file| TempFileToName::new("audio.m4s", file))?;
 
                 Some(file_audio)
             }
@@ -410,19 +411,29 @@ pub async fn download(
                 response.cid
             );
 
-            DownloadFile::task(danmu_url, file_danmu, None)
+            DownloadFileResponse::from_url(danmu_url, file_danmu)
+                .await?
+                .task()
                 .await?
                 .reopen()
                 .map(|file| TempFileToName::new("danmaku.pb", file))
         };
 
         let file_danmu_xml = {
+            let mut file_danmu_xml = NamedTempFile::new_in(tmp_path).map_err(|err| {
+                anyhow::anyhow!(
+                    "can't not download temp file err: {:?},caller: {:?}",
+                    err,
+                    MaybeLocation::caller()
+                )
+            })?;
+
             let xml_url = format!(
                 "https://api.bilibili.com/x/v1/dm/list.so?oid={}",
                 response.cid
             );
 
-            let http_response = DownloadFile::response(xml_url).await?;
+            let http_response = DownloadFilePending::response(xml_url).await?;
 
             let bytes = http_response
                 .bytes()
@@ -437,14 +448,6 @@ pub async fn download(
             decoder.read_to_end(&mut decompressed).map_err(|err| {
                 anyhow::anyhow!(
                     "unzip danmu xml error:{:?},caller:{:?}",
-                    err,
-                    MaybeLocation::caller()
-                )
-            })?;
-
-            let mut file_danmu_xml = NamedTempFile::new_in(tmp_path).map_err(|err| {
-                anyhow::anyhow!(
-                    "can't not download temp file err: {:?},caller: {:?}",
                     err,
                     MaybeLocation::caller()
                 )
@@ -491,26 +494,13 @@ pub async fn download(
 
         let mut index = IndexOuput::default();
 
-        let audio_id = if let Some(a) = a
+        let audio_id = if let Some(a) = a.as_ref()
             && let Some(file_a) = file_audio.as_ref()
         {
             let (a_size, a_hex) = file_a.get_size_md5()?;
-            index.audio.push(IndexAudio {
-                id: a.id,
-                base_url: a.base_url.clone(),
-                backup_url: a.backup_url.clone(),
-                bandwidth: a.bandwidth,
-                codecid: a.codecid,
-                md5: a_hex,
-                size: a_size,
-                audio_id: 0,
-                no_rexcode: false,
-                frame_rate: a.frame_rate.clone(),
-                width: a.width,
-                height: a.height,
-                widevine_pssh: "".to_string(),
-                bilidrm_uri: "".to_string(),
-            });
+            index
+                .audio
+                .push(IndexAudio::from_audio(a.clone(), a_hex, a_size));
             a.id
         } else {
             0
@@ -520,22 +510,9 @@ pub async fn download(
             && let Some(file_v) = file_video.as_ref()
         {
             let (v_size, v_hex) = file_v.get_size_md5()?;
-            index.video.push(IndexVideo {
-                id: v.id.clone(),
-                base_url: v.base_url.clone(),
-                backup_url: v.backup_url.clone(),
-                bandwidth: v.bandwidth,
-                codecid: v.codecid,
-                md5: v_hex,
-                size: v_size,
-                audio_id: audio_id,
-                no_rexcode: false,
-                frame_rate: v.frame_rate.clone(),
-                width: v.width,
-                height: v.height,
-                widevine_pssh: "".to_string(),
-                bilidrm_uri: "".to_string(),
-            });
+            index
+                .video
+                .push(IndexVideo::from_video(v.clone(), v_hex, v_size, audio_id));
             v.id
         } else {
             0
@@ -852,15 +829,15 @@ impl FilesIntoFolders {
 }
 
 #[derive(Debug, Deref, DerefMut, Clone)]
-pub struct DownloadProgressBar(pub Cow<'static, ProgressBar>);
+pub struct DownloadProgressBar(pub ProgressBar);
 
 impl DownloadProgressBar {
     pub fn new(len: u64) -> Self {
-        Self(Cow::Owned(ProgressBar::new(len)))
+        Self(ProgressBar::new(len))
     }
 
     pub fn progress_bar(&self, bars: &MultiProgress, part: &str) -> &Self {
-        bars.add(self.as_ref().clone());
+        bars.add(self.0.clone());
 
         self.set_message(format!("{:<10}", part));
         self.set_style(
@@ -879,38 +856,40 @@ impl Default for DownloadProgressBar {
     }
 }
 
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct DownloadFile(pub DbHandleResult<NamedTempFile, anyhow::Error>);
+#[derive(Debug)]
+pub struct DownloadFilePending {
+    pub pg: Option<DownloadProgressBar>,
+    pub tmp: NamedTempFile,
+    pub url: Url,
+}
 
-impl DownloadFile {
-    pub fn new<T: IntoUrl + Send + 'static>(
-        runtimer: &mut TokioTasksRuntime,
-        url: T,
-        tmp: NamedTempFile,
-    ) -> Self {
-        let task = Self::task(url, tmp, None);
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(DbHandleResult::new(handle))
+impl DownloadFilePending {
+    pub fn new<T: IntoUrl>(url: T, tmp: NamedTempFile) -> Result<Self, reqwest::Error> {
+        Ok(Self {
+            pg: None,
+            url: url.into_url()?,
+            tmp,
+        })
     }
 
-    pub fn new_with_bg<T: IntoUrl + Send + 'static>(
-        runtimer: &mut TokioTasksRuntime,
+    pub fn new_with_bg<T: IntoUrl>(
         url: T,
         tmp: NamedTempFile,
-        pb: DownloadProgressBar,
-    ) -> Self {
-        let task = Self::task(url, tmp, Some(pb));
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(DbHandleResult::new(handle))
+        pg: DownloadProgressBar,
+    ) -> Result<Self, reqwest::Error> {
+        Ok(Self {
+            pg: Some(pg),
+            tmp,
+            url: url.into_url()?,
+        })
     }
 
-    pub async fn task<T: IntoUrl>(
-        url: T,
-        tmp: NamedTempFile,
-        pb: Option<DownloadProgressBar>,
-    ) -> Result<NamedTempFile> {
-        let response = Self::response(url).await?;
-        Self::task_by_response(response, tmp, pb).await
+    pub async fn into_response(self) -> Result<DownloadFileResponse> {
+        let Self { pg, tmp, url } = self;
+
+        let response = Self::response(url.as_str()).await?;
+
+        Ok(DownloadFileResponse { pg, tmp, response })
     }
 
     pub async fn response<T: IntoUrl>(url: T) -> Result<Response> {
@@ -920,27 +899,122 @@ impl DownloadFile {
         Ok(response)
     }
 
-    pub async fn task_by_response(
-        mut response: reqwest::Response,
-        mut tmp: NamedTempFile,
-        pb: Option<DownloadProgressBar>,
-    ) -> Result<NamedTempFile> {
+    pub fn progress_bar(&mut self, part: &str) -> Result<&mut Self> {
+        let Some(pg) = self.pg.as_mut() else {
+            return Err(anyhow::anyhow!("Not has progressbar"));
+        };
+
+        pg.set_message(format!("{:<10}", part));
+        pg.set_style(
+            ProgressStyle::with_template(BAR_TEMPLATE)
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+
+        Ok(self)
+    }
+
+    pub fn set_bg(&mut self, dpb: DownloadProgressBar) -> Result<&mut Self> {
+        let _ = self.pg.insert(dpb);
+
+        Ok(self)
+    }
+}
+
+#[derive(Debug)]
+pub struct DownloadFileResponse {
+    pub pg: Option<DownloadProgressBar>,
+    pub response: Response,
+    pub tmp: NamedTempFile,
+}
+
+impl DownloadFileResponse {
+    pub fn with_pb<F: FnOnce(&DownloadProgressBar, &Response, &NamedTempFile)>(
+        self,
+        func: F,
+    ) -> Self {
+        let Self { pg, response, tmp } = &self;
+        if let Some(pg) = pg.as_ref() {
+            func(pg, response, tmp);
+        }
+        self
+    }
+
+    pub fn with<F: FnOnce(&Self)>(self, func: F) -> Self {
+        func(&self);
+        self
+    }
+
+    pub fn try_headers_size(&self) -> Result<u64> {
+        let hv = &self.response.headers()[CONTENT_LENGTH];
+        let str = hv.to_str()?;
+        let size = str.parse()?;
+
+        Ok(size)
+    }
+
+    pub fn into_task(self, runtimer: &mut TokioTasksRuntime) -> DownloadFile {
+        DownloadFile::new(self, runtimer)
+    }
+
+    pub async fn from_url<T: IntoUrl>(url: T, tmp: NamedTempFile) -> Result<Self> {
+        let response = DownloadFilePending::response(url).await?;
+
+        Ok(Self {
+            pg: None,
+            tmp,
+            response,
+        })
+    }
+
+    pub fn response(&self) -> &Response {
+        &self.response
+    }
+
+    pub async fn task(self) -> Result<NamedTempFile> {
+        let Self {
+            pg,
+            mut tmp,
+            mut response,
+        } = self;
         loop {
             match response.chunk().await {
                 Ok(Some(chunk)) => {
                     tmp.write_all(&chunk)?;
                     tmp.flush()?;
-                    if let Some(pb) = pb.as_ref() {
+                    if let Some(pb) = pg.as_ref() {
                         pb.inc(chunk.len() as u64);
                     }
                 }
                 Ok(None) => break,
                 Err(e) => {
-                    return Err(anyhow!("Failed to pic: {e}"));
+                    return Err(anyhow!("Failed to download: {e}"));
                 }
             }
         }
 
         Ok(tmp)
+    }
+}
+
+#[derive(Debug, Component)]
+pub struct DownloadFile(pub DbHandleResult<NamedTempFile, anyhow::Error>);
+
+impl DownloadFile {
+    pub fn new(response: DownloadFileResponse, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = runtimer.spawn_background_task(move |_ctx| response.task());
+
+        let handle = DbHandleResult::new(task);
+
+        Self(handle)
+    }
+
+    pub async fn from_url<T: IntoUrl>(
+        runtimer: &mut TokioTasksRuntime,
+        url: T,
+        tmp: NamedTempFile,
+    ) -> Result<Self> {
+        let response = DownloadFileResponse::from_url(url, tmp).await?;
+        Ok(Self::new(response, runtimer))
     }
 }

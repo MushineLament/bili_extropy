@@ -20,7 +20,7 @@ pub struct Dash {
     pub audio: VecDeque<Audio>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Video {
     pub id: i64,
     pub base_url: Url,
@@ -32,7 +32,7 @@ pub struct Video {
     pub height: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Audio {
     pub id: i64,
     pub base_url: Url,
