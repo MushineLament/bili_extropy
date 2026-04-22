@@ -28,7 +28,7 @@ pub struct IndexVideo {
 }
 
 impl IndexVideo {
-    pub fn from_video(video: Video, md5: String, size: u64, audio_id: i64) -> Self {
+    pub fn from_video(video: Video, md5: String, size: u64) -> Self {
         Self {
             id: video.id,
             base_url: video.base_url,
@@ -37,7 +37,7 @@ impl IndexVideo {
             codecid: video.codecid,
             md5,
             size,
-            audio_id,
+            audio_id: 0,
             no_rexcode: false,
             frame_rate: video.frame_rate,
             width: video.width,
@@ -45,6 +45,11 @@ impl IndexVideo {
             widevine_pssh: "".to_string(),
             bilidrm_uri: "".to_string(),
         }
+    }
+
+    pub fn update_audio_id(&mut self, audio_id: i64) -> &mut Self {
+        self.audio_id = audio_id;
+        self
     }
 }
 

@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     hash::Hash,
-    io::{self, Write as _},
+    io::{self, Seek as _, Write as _},
     mem,
     path::{Path, PathBuf},
 };
@@ -172,7 +172,7 @@ impl DownloadHandle {
 
 pub async fn download(
     db: &Db,
-    response: &Media,
+    media: &Media,
     bars: MultiProgress,
     tmp_path: &Path,
     active_status: &[StatusModel],
@@ -219,8 +219,28 @@ pub async fn download(
         })
         .collect::<Vec<_>>();
 
+    let system_now = std::time::SystemTime::now();
+
+    let duration_file_create = system_now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "get system time err: {:?},caller: {:?}",
+                err,
+                MaybeLocation::caller()
+            )
+        })?;
+
+    let mut file_entry_json = EntryOuput::default();
+
+    file_entry_json.time_update_stamp = duration_file_create.as_millis();
+
+    let mut index = IndexOuput::default();
+
+    file_entry_json.update_media(media);
+
     let file_icon = DownloadFileResponse::from_url(
-        response.pic.as_str(),
+        media.pic.as_str(),
         NamedTempFile::new_in(tmp_path).map_err(|err| {
             anyhow::anyhow!(
                 "can't not download temp file err: {:?},caller: {:?}",
@@ -237,7 +257,7 @@ pub async fn download(
         code,
         data,
         message,
-    } = BiliApi::request(MediaInfoAidPayload { aid: response.aid })
+    } = BiliApi::request(MediaInfoAidPayload { aid: media.aid })
         .map_err(|err| {
             anyhow::anyhow!(
                 "can't get media infomation err: {:?},caller: {:?}",
@@ -252,13 +272,13 @@ pub async fn download(
             owner,
             pages,
             staff: _,
-            cid: _media_cid,
+            cid,
         }),
         0,
     ) = (data, code)
     else {
         media::MediaEntity::update(media::ActiveModel {
-            aid: Unchanged(response.aid),
+            aid: Unchanged(media.aid),
             state: Set(match code {
                 -403 | 62012 | 62002 => MediaState::PermissionDenied,
                 _ => MediaState::Expired,
@@ -278,18 +298,24 @@ pub async fn download(
 
         return Err(anyhow!(
             "Info unreachable media<{}-{}>: {}",
-            response.aid,
-            response.title,
+            media.aid,
+            media.title,
             message.unwrap_or_default()
         ));
     };
 
+    file_entry_json.update_owner(&owner);
+
+    let mut tmptofolder = FilesIntoFolders::new();
+
     let only1p = pages.len() == 1;
     for Page { cid, page, part } in pages {
+        file_entry_json.update_page(cid, page);
+
         let _filename = if only1p {
-            format!("{}-{}", response.aid, response.title)
+            format!("{}-{}", media.aid, media.title)
         } else {
-            format!("{}-{}({page})-{part}", response.aid, response.title)
+            format!("{}-{}({page})-{part}", media.aid, media.title)
         };
         let DashResp {
             data:
@@ -298,11 +324,11 @@ pub async fn download(
                     timelength,
                 },
             ..
-        } = BiliApi::request(DashPayload::new(response.aid, cid).await.map_err(|err| {
+        } = BiliApi::request(DashPayload::new(media.aid, cid).await.map_err(|err| {
             anyhow::anyhow!(
                 "caller: {:?},aid:{:?},get response error:{:?}",
                 (file!(), line!()),
-                response.aid,
+                media.aid,
                 err,
             )
         })?)
@@ -311,9 +337,11 @@ pub async fn download(
             anyhow!(
                 "caller: {:?},get dash payload err,maybe is pay media or other reason,bvid: {:?}",
                 (file!(), line!()),
-                response.bvid,
+                media.bvid,
             )
         })?;
+
+        file_entry_json.total_time_milli = timelength;
 
         let mut video = video.into_iter();
         let mut audio = audio.into_iter();
@@ -328,8 +356,10 @@ pub async fn download(
         let pb = DownloadProgressBar::default();
         pb.progress_bar(&bars, &part);
 
-        let file_video = match v.as_ref() {
+        let mut file_video = match v.as_ref() {
             Some(v) => {
+                file_entry_json.update_video(v);
+
                 let tmp = NamedTempFile::new_in(tmp_path).map_err(|err| {
                     anyhow::anyhow!(
                         "can't not download temp file err: {:?},caller: {:?}",
@@ -341,25 +371,34 @@ pub async fn download(
                     DownloadFilePending::new_with_bg(v.base_url.as_str(), tmp, pb.clone())?
                         .into_response()
                         .await?
-                        .with_pb(|pg, response, _| {
-                            let hv = &response.headers()[CONTENT_LENGTH].clone();
-                            let str = hv.to_str().unwrap_or("");
-                            let size = str.parse().unwrap_or_default();
-
-                            pg.inc_length(size);
+                        .with(|res| {
+                            if let Ok(size) = res.try_headers_size() {
+                                file_entry_json.total_bytes += size;
+                                res.pg.as_ref().map(|pg| pg.inc_length(size));
+                            }
                         })
                         .task()
                         .await?
                         .reopen()
-                        .map(|file| TempFileToName::new("video.m4s", file))?;
+                        .map(|file| TempFileReopen::new("video.m4s", file))?;
 
-                Some(file_video)
+                let (v_size, v_hex) = file_video.get_size_md5()?;
+
+                let index = IndexVideo::from_video(v.clone(), v_hex, v_size);
+
+                Some((file_video, index))
             }
             _ => None,
         };
 
         let file_audio = match a.as_ref() {
             Some(a) => {
+                if let Some((_, video)) = file_video.as_mut() {
+                    video.update_audio_id(a.id);
+                }
+
+                file_entry_json.update_audio(a);
+
                 let tmp = NamedTempFile::new_in(tmp_path).map_err(|err| {
                     anyhow::anyhow!(
                         "can't not download temp file err: {:?},caller: {:?}",
@@ -372,22 +411,35 @@ pub async fn download(
                     DownloadFilePending::new_with_bg(a.base_url.as_str(), tmp, pb.clone())?
                         .into_response()
                         .await?
-                        .with_pb(|pg, response, _| {
-                            let hv = &response.headers()[CONTENT_LENGTH];
-                            let str = hv.to_str().unwrap_or("");
-                            let size = str.parse().unwrap_or_default();
-
-                            pg.inc_length(size);
+                        .with(|res| {
+                            if let Ok(size) = res.try_headers_size() {
+                                file_entry_json.total_bytes += size;
+                                res.pg.as_ref().map(|pg| pg.inc_length(size));
+                            }
                         })
                         .task()
                         .await?
                         .reopen()
-                        .map(|file| TempFileToName::new("audio.m4s", file))?;
+                        .map(|file| TempFileReopen::new("audio.m4s", file))?;
+
+                let (a_size, a_hex) = file_audio.get_size_md5()?;
+                index
+                    .audio
+                    .push(IndexAudio::from_audio(a.clone(), a_hex, a_size));
 
                 Some(file_audio)
             }
             _ => None,
         };
+
+        file_video.as_ref().map(|file| {
+            info!("file_video size 1:{:?}", file.0.size());
+        });
+
+        let file_video = file_video.map(|(file_video, index_video)| {
+            index.video.push(index_video);
+            file_video
+        });
 
         let file_index = NamedTempFile::new_in(tmp_path).map_err(|err| {
             anyhow::anyhow!(
@@ -408,7 +460,7 @@ pub async fn download(
 
             let danmu_url = format!(
                 "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid={}&segment_index=1",
-                response.cid
+                media.cid
             );
 
             DownloadFileResponse::from_url(danmu_url, file_danmu)
@@ -416,7 +468,7 @@ pub async fn download(
                 .task()
                 .await?
                 .reopen()
-                .map(|file| TempFileToName::new("danmaku.pb", file))
+                .map(|file| TempFileReopen::new("danmaku.pb", file))
         };
 
         let file_danmu_xml = {
@@ -428,10 +480,7 @@ pub async fn download(
                 )
             })?;
 
-            let xml_url = format!(
-                "https://api.bilibili.com/x/v1/dm/list.so?oid={}",
-                response.cid
-            );
+            let xml_url = format!("https://api.bilibili.com/x/v1/dm/list.so?oid={}", media.cid);
 
             let http_response = DownloadFilePending::response(xml_url).await?;
 
@@ -457,7 +506,7 @@ pub async fn download(
 
             file_danmu_xml
                 .reopen()
-                .map(|file| TempFileToName::new("danmaku.xml", file))
+                .map(|file| TempFileReopen::new("danmaku.xml", file))
         };
 
         let file_entry = NamedTempFile::new_in(tmp_path).map_err(|err| {
@@ -468,18 +517,21 @@ pub async fn download(
             )
         })?;
 
-        let system_now = std::time::SystemTime::now();
+        let index_writer = io::BufWriter::new(&file_index);
+        serde_json::to_writer_pretty(index_writer, &index)
+            .context("Can't upsert into index.json")?; // 使用 pretty 格式化输出;
 
-        let duration_file_create =
-            system_now
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "get system time err: {:?},caller: {:?}",
-                        err,
-                        MaybeLocation::caller()
-                    )
-                })?;
+        file_entry_json.downloaded_bytes = file_audio
+            .as_ref()
+            .and_then(|a| a.size().ok())
+            .unwrap_or_default()
+            + file_video
+                .as_ref()
+                .and_then(|v| v.size().ok())
+                .unwrap_or_default();
+
+        file_entry_json.page_data.from = "vupload".to_string();
+        file_entry_json.is_completed = true;
 
         let duration_file_update =
             system_now
@@ -491,139 +543,26 @@ pub async fn download(
                         MaybeLocation::caller()
                     )
                 })?;
-
-        let mut index = IndexOuput::default();
-
-        let audio_id = if let Some(a) = a.as_ref()
-            && let Some(file_a) = file_audio.as_ref()
-        {
-            let (a_size, a_hex) = file_a.get_size_md5()?;
-            index
-                .audio
-                .push(IndexAudio::from_audio(a.clone(), a_hex, a_size));
-            a.id
-        } else {
-            0
-        };
-
-        let v_id = if let Some(v) = v.as_ref()
-            && let Some(file_v) = file_video.as_ref()
-        {
-            let (v_size, v_hex) = file_v.get_size_md5()?;
-            index
-                .video
-                .push(IndexVideo::from_video(v.clone(), v_hex, v_size, audio_id));
-            v.id
-        } else {
-            0
-        };
-
-        let index_writer = io::BufWriter::new(&file_index);
-        serde_json::to_writer_pretty(index_writer, &index)
-            .context("Can't upsert into index.json")?; // 使用 pretty 格式化输出;
-
-        let entry = EntryOuput {
-            media_type: response.r#type.clone() as i64,
-            has_dash_audio: audio_id != 0,
-            is_completed: true,
-            total_bytes: file_audio
-                .as_ref()
-                .and_then(|a| a.size().ok())
-                .unwrap_or_default()
-                + file_video
-                    .as_ref()
-                    .and_then(|v| v.size().ok())
-                    .unwrap_or_default(),
-            downloaded_bytes: file_audio
-                .as_ref()
-                .and_then(|a| a.size().ok())
-                .unwrap_or_default()
-                + file_video
-                    .as_ref()
-                    .and_then(|v| v.size().ok())
-                    .unwrap_or_default(),
-            title: response.title.clone(),
-            type_tag: v_id.to_string(),
-            cover: response.pic.clone(),
-            video_quality: v_id,
-            prefered_video_quality: v_id,
-            guessed_total_bytes: 0,
-            total_time_milli: timelength,
-            //https://github.com/ILoveScratch2/bilibili-api-collect-new/blob/main/docs/danmaku/danmaku_view_proto.md
-            danmaku_count: -1,
-            time_update_stamp: duration_file_create.as_millis(),
-            time_create_stamp: duration_file_update.as_millis(),
-            can_play_in_advance: true,
-            interrupt_transform_temp_file: false,
-            quality_pithy_description: match v_id {
-                6 => "240P",
-                16 => "360P",
-                32 => "480P",
-                64 => "720P",
-                74 => "720P60",
-                80 => "1080P",
-                100 => "智能修复",
-                112 => "1080P+",
-                116 => "1080P60",
-                120 => "4K",
-                125 => "HDR",
-                126 => "杜比视界",
-                127 => "8K",
-                129 => "HDR",
-                _ => unreachable!("未定义的视频清晰度:{:?}", v_id),
-            }
-            .to_string(),
-            quality_superscript: "".to_owned(),
-            variable_resolution_ratio: false,
-            cache_version_code: -1,
-            preferred_audio_quality: 0,
-            audio_quality: 0,
-            avid: response.aid,
-            spid: 0,
-            season_id: 0,
-            bvid: "".to_string(),
-            owner_id: owner.mid,
-            owner_name: owner.name.clone(),
-            is_charge_video: false,
-            verification_code: 0,
-            page_data: EntryPageData {
-                cid,
-                page,
-                from: "vupload".to_string(),
-                part: response.title.clone(),
-                link: format!("bilibili://video/{}?cid={}", response.aid, cid),
-                rich_vid: "".to_owned(),
-                has_alias: false,
-                tid: 0,
-                width: v.as_ref().map(|v| v.width).unwrap_or_default(),
-                height: v.as_ref().map(|v| v.height).unwrap_or_default(),
-                rotate: 0,
-                download_title: "".to_owned(),
-                download_subtitle: "".to_owned(),
-            },
-            ep: None,
-        };
+        file_entry_json.time_create_stamp = duration_file_update.as_millis();
 
         let entry_writer = io::BufWriter::new(&file_entry);
-        serde_json::to_writer_pretty(entry_writer, &entry)
+        serde_json::to_writer_pretty(entry_writer, &file_entry_json)
             .context("Can't upsert into index.json")?; // 使用 pretty 格式化输出;
-
-        let mut tmptofolder = FilesIntoFolders::new();
 
         let file_entry = file_entry
             .reopen()
-            .map(|file| TempFileToName::new("entry.json", file));
+            .map(|file| TempFileReopen::new("entry.json", file));
 
         let file_icon = file_icon
             .reopen()
-            .map(|file| TempFileToName::new("cover.jpg", file));
+            .map(|file| TempFileReopen::new("cover.jpg", file));
 
         let info_files = [file_danmu, file_danmu_xml, file_entry, file_icon];
 
         // 视频id目录下
         for folder in folders
             .iter()
-            .map(|folder| folder.join(response.aid.to_string()))
+            .map(|folder| folder.join(media.aid.to_string()))
             .map(|aid_foler| aid_foler.join(format!("c_{}", cid.to_string())))
         {
             let files = info_files
@@ -637,20 +576,24 @@ pub async fn download(
 
         let file_index = file_index
             .reopen()
-            .map(|file| TempFileToName::new("index.json", file))
+            .map(|file| TempFileReopen::new("index.json", file))
             .map_err(|err| {
                 error!("TODO!:{:?}", err);
             })
             .ok();
+
+        file_video.as_ref().map(|file| {
+            info!("file_video size:{:?}", file.size());
+        });
 
         let medias_files = [file_video, file_audio, file_index];
 
         // 视频清晰度目录下
         for folder in folders
             .iter()
-            .map(|folder| folder.join(response.aid.to_string()))
+            .map(|folder| folder.join(media.aid.to_string()))
             .map(|aid_foler| aid_foler.join(format!("c_{}", cid.to_string())))
-            .map(|up_cid| up_cid.join(v_id.to_string()))
+            .map(|up_cid| up_cid.join(v.as_ref().map(|v| v.id.to_string()).unwrap_or_default()))
         {
             let files = medias_files
                 .iter()
@@ -660,12 +603,12 @@ pub async fn download(
 
             tmptofolder.add_path_and_files(folder, files);
         }
-
-        tmptofolder.build();
     }
 
+    tmptofolder.build();
+
     media::MediaEntity::update(media::ActiveModel {
-        aid: Unchanged(response.aid),
+        aid: Unchanged(media.aid),
         state: Set(MediaState::Completed.to_string()),
         ..Default::default()
     })
@@ -676,13 +619,13 @@ pub async fn download(
 }
 
 #[derive(Debug)]
-pub struct TempFileToName {
+pub struct TempFileReopen {
     pub name: Cow<'static, str>,
     /// PartialEq, Eq, Hash will ignore this,
     pub tmp: File,
 }
 
-impl TempFileToName {
+impl TempFileReopen {
     pub fn new<T: Into<Cow<'static, str>>>(name: T, tmp: File) -> Self {
         Self {
             name: name.into(),
@@ -728,20 +671,20 @@ impl TempFileToName {
     }
 }
 
-impl PartialEq for TempFileToName {
+impl PartialEq for TempFileReopen {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
     }
 }
-impl Eq for TempFileToName {}
-impl Hash for TempFileToName {
+impl Eq for TempFileReopen {}
+impl Hash for TempFileReopen {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
 #[derive(Debug, Default, Deref, DerefMut)]
-pub struct FilesIntoFolders(pub HashMap<PathBuf, HashSet<TempFileToName>>);
+pub struct FilesIntoFolders(pub HashMap<PathBuf, HashSet<TempFileReopen>>);
 
 impl FilesIntoFolders {
     pub fn new() -> Self {
@@ -751,7 +694,7 @@ impl FilesIntoFolders {
     pub fn add_path_and_files<
         P: Into<PathBuf>,
         I: IntoIterator<Item = T>,
-        T: Into<TempFileToName>,
+        T: Into<TempFileReopen>,
     >(
         &mut self,
         folder: P,
@@ -798,6 +741,11 @@ impl FilesIntoFolders {
             let mut to_vec = Vec::from_iter(tempfiles);
 
             for file_name in to_vec.iter_mut() {
+                if let Err(e) = file_name.tmp.seek(io::SeekFrom::Start(0)) {
+                    error!("Failed to seek file {:?} to start: {}", file_name.name, e);
+                    continue;
+                }
+
                 let target_path = folder.join(file_name.name.as_ref());
 
                 if target_path.exists() {
@@ -813,18 +761,17 @@ impl FilesIntoFolders {
                     }
                 };
 
-                if let Err(err) = io::copy(&mut file_name.tmp, &mut target_file) {
-                    error!(
-                        "copy temp file to target path<{:?}> error:{:?}",
-                        target_path, err
-                    );
+                match io::copy(&mut file_name.tmp, &mut target_file) {
+                    Ok(_bytes) => {
+                        // info!("Copied {} bytes to {:?}", bytes, target_path);
+                        ()
+                    }
+                    Err(err) => error!("copy error: {:?}", err),
                 }
             }
 
             name.extend(to_vec);
         }
-
-        self.clear();
     }
 }
 

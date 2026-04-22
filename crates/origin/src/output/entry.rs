@@ -3,6 +3,11 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::{
+    entity::{media, up},
+    response,
+};
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EntryOuput {
     /// 媒体类型，2 通常表示普通视频（也可能是其他数值区分不同类型）。
@@ -30,6 +35,7 @@ pub struct EntryOuput {
     /// 视频总时长（毫秒）。
     pub total_time_milli: i64,
     /// 弹幕数量（已加载或估计值）。
+    /// https://github.com/ILoveScratch2/bilibili-api-collect-new/blob/main/docs/danmaku/danmaku_view_proto.md
     pub danmaku_count: i64,
     /// 上次更新时间戳（毫秒）。
     pub time_update_stamp: u128,
@@ -73,6 +79,63 @@ pub struct EntryOuput {
     pub ep: Option<String>,
 }
 
+impl EntryOuput {
+    pub fn update_media(&mut self, media: &media::Media) {
+        self.title = media.title.clone();
+        self.cover = media.pic.clone();
+        self.media_type = media.r#type.clone() as i64;
+        self.avid = media.aid;
+        self.page_data.part = media.title.clone();
+        self.page_data.link = format!("bilibili://video/{}?cid={}", media.aid, media.cid);
+    }
+
+    pub fn update_video(&mut self, video: &response::Video) -> &mut Self {
+        self.type_tag = video.id.to_string();
+        self.video_quality = video.id;
+        self.prefered_video_quality = video.id;
+        self.quality_pithy_description = match video.id {
+            6 => "240P",
+            16 => "360P",
+            32 => "480P",
+            64 => "720P",
+            74 => "720P60",
+            80 => "1080P",
+            100 => "智能修复",
+            112 => "1080P+",
+            116 => "1080P60",
+            120 => "4K",
+            125 => "HDR",
+            126 => "杜比视界",
+            127 => "8K",
+            129 => "HDR",
+            _ => unreachable!("未定义的视频清晰度:{:?}", video.id),
+        }
+        .to_string();
+
+        self.page_data.width = video.width;
+        self.page_data.height = video.height;
+
+        self
+    }
+
+    pub fn update_audio(&mut self, audio: &response::Audio) -> &mut Self {
+        self.has_dash_audio = audio.id != 0;
+        self
+    }
+
+    pub fn update_owner(&mut self, owner: &up::Upper) -> &mut Self {
+        self.owner_id = owner.mid;
+        self.owner_name = owner.name.clone();
+        self
+    }
+
+    pub fn update_page(&mut self, cid: i64, page: i64) -> &mut Self {
+        self.page_data.cid = cid;
+        self.page_data.page = page;
+        self
+    }
+}
+
 impl Default for EntryOuput {
     fn default() -> Self {
         Self {
@@ -88,15 +151,15 @@ impl Default for EntryOuput {
             prefered_video_quality: Default::default(),
             guessed_total_bytes: Default::default(),
             total_time_milli: Default::default(),
-            danmaku_count: Default::default(),
+            danmaku_count: -1,
             time_update_stamp: Default::default(),
             time_create_stamp: Default::default(),
-            can_play_in_advance: Default::default(),
+            can_play_in_advance: true,
             interrupt_transform_temp_file: Default::default(),
             quality_pithy_description: Default::default(),
             quality_superscript: Default::default(),
             variable_resolution_ratio: Default::default(),
-            cache_version_code: Default::default(),
+            cache_version_code: -1,
             preferred_audio_quality: Default::default(),
             audio_quality: Default::default(),
             avid: Default::default(),

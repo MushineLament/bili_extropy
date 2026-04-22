@@ -121,12 +121,12 @@ pub struct MediaInfoData {
     pub owner: Upper,
     pub pages: Vec<Page>,
     pub staff: Option<Vec<Upper>>,
-    pub cid: i64,
+    pub cid: UpperCid,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Page {
-    pub cid: i64,
+    pub cid: UpperCid,
     pub page: i64,
     pub part: String,
 }
