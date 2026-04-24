@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     hash::Hash,
-    io::{self, Seek as _, Write as _},
+    io::{self, ErrorKind, Seek as _, Write as _},
     mem,
     path::{Path, PathBuf},
 };
@@ -20,12 +20,12 @@ use crate::{
         media::{self, Media, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
         status::StatusModel,
     },
-    output::{EntryOuput, EntryPageData, IndexAudio, IndexOuput, IndexVideo},
+    output::{EntryOuput, IndexAudio, IndexOuput, IndexVideo},
     payload::DashPayload,
     response::{Dash, DashData, DashResp},
     state::MediaState,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use api_req::{ApiCaller as _, error::ApiErr};
 use bevy::{
     ecs::{change_detection::MaybeLocation, component::Component},
@@ -33,7 +33,6 @@ use bevy::{
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use futures::TryFutureExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use migration::OnConflict;
 use reqwest::{IntoUrl, Response, header::CONTENT_LENGTH};
@@ -57,7 +56,7 @@ impl DownloadWay {
         Self(str.into())
     }
 
-    pub async fn response(self) -> Result<MediaInfoSingle> {
+    pub async fn response(self) -> Result<MediaInfoSingle, ApiErr> {
         let anyhow = anyhow::anyhow!("request aid media<{:?}>", self.0);
 
         let aid = self.0.parse::<MediaAid>();
@@ -72,22 +71,22 @@ impl DownloadWay {
 
         let Ok(aid) = aid else {
             // if not a mediacid and not a avlid bvid
-            return Err(anyhow::anyhow!(
-                "{:?} error:{:?}",
-                anyhow,
-                MaybeLocation::caller()
-            ));
+            error!(
+                "{:?}",
+                anyhow::anyhow!("{:?} error:{:?}", anyhow, MaybeLocation::caller())
+            );
+            return response;
         };
 
         let response: Result<MediaInfoSingle, ApiErr> =
             BiliApi::request(MediaInfoAidPayload { aid }).await;
 
-        response.map_err(|_err| anyhow::anyhow!("{:?} error:{:?}", anyhow, MaybeLocation::caller()))
+        response
     }
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct DownloadHandle(pub DbHandle<Result<BvId>>);
+pub struct DownloadHandle(pub DbHandle<Result<BvId, DownloadFileError>>);
 
 impl DownloadHandle {
     pub fn new<T: Into<String>>(
@@ -102,17 +101,20 @@ impl DownloadHandle {
         let task = async move {
             add_cookie_jar(parse_cookies(&cookies));
 
-            let info_err = anyhow!("Info unreachable media<{}> :", cookies);
+            let bvid = list.0.clone();
 
-            let media = list.response().await?;
+            let media = list
+                .response()
+                .await
+                .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)));
 
-            let MediaInfoSingle {
+            let Ok(MediaInfoSingle {
                 code: _,
                 data: Some(media),
                 message: _,
-            } = media
+            }) = media
             else {
-                return Err(anyhow!("{:?} not has media infomation", info_err));
+                return media.map(|_| bvid);
             };
 
             let aid = media.aid;
@@ -128,7 +130,7 @@ impl DownloadHandle {
                 pic: None,
             };
 
-            let prikey =
+            let _prikey =
                 media::MediaEntity::insert_many([model].into_iter().map(|m| m.into_active_model()))
                     .on_conflict(
                         OnConflict::column(media::Column::Aid)
@@ -142,27 +144,28 @@ impl DownloadHandle {
                             .to_owned(),
                     )
                     .exec_without_returning(&db.db)
-                    .await;
+                    .await
+                    .map_err(|err| {
+                        error!(
+                            "can't not upsert media<{:?}> in to table, error:{:?}",
+                            aid, err
+                        );
 
-            prikey.map_err(|err| {
-                anyhow!(
-                    "can't not upsert media<{:?}> in to table, error:{:?}",
-                    aid,
-                    err
-                )
-            })?;
+                        DownloadFileError::new(DownloadFileErrorKind::Db(err))
+                    })?;
 
-            download(
+            let result = download(
                 &db,
                 &media,
                 bars.clone(),
                 &Path::new(TEMP_DOWNLOAD_FOLDER),
                 active_status.as_ref(),
             )
-            .await?;
+            .await
+            .map(|_| bvid);
 
             info!("task finished");
-            Ok(bvid)
+            result
         };
 
         let handle = runtimer.spawn_background_task(move |_ctx| task);
@@ -176,103 +179,57 @@ pub async fn download(
     bars: MultiProgress,
     tmp_path: &Path,
     active_status: &[StatusModel],
-) -> Result<()> {
+) -> Result<(), DownloadFileError> {
     if !Path::new(tmp_path).exists() {
-        if let Err(err) = fs::create_dir_all(tmp_path) {
-            return Err(anyhow!("can't create temp download folder: {:?}", err));
-        };
+        let _ = fs::create_dir_all(tmp_path)?;
     }
 
     if !Path::new(tmp_path).is_dir() {
-        return Err(anyhow!(".temp not is a folder"));
+        return Err(DownloadFileError::new(DownloadFileErrorKind::IO(
+            io::Error::new(ErrorKind::NotADirectory, "can't store tmp file"),
+        )));
     }
 
     if active_status.is_empty() {
-        return Err(anyhow!("Not any status error"));
+        return Err(DownloadFileError::new(DownloadFileErrorKind::Status(
+            anyhow!("Not any status error"),
+        )));
     }
 
     let folders = active_status
         .iter()
         .map(|model| Path::new(&model.path).join(&model.name))
-        .filter(|path| {
-            if !path.exists() {
-                if let Err(err) = fs::create_dir_all(path) {
-                    error!(
-                        "create directoy error: {:?},caller: {:?}",
-                        err,
-                        MaybeLocation::caller()
-                    )
-                }
-                return false;
-            }
-
-            if !path.is_dir() {
-                error!(
-                    "The path is not a directory,caller: {:?}",
-                    MaybeLocation::caller()
-                );
-
-                return false;
-            }
-
-            true
-        })
+        .filter(|path| !path.exists() && fs::create_dir_all(path).is_ok())
+        .filter(|path| path.is_dir())
         .collect::<Vec<_>>();
 
-    let system_now = std::time::SystemTime::now();
-
-    let duration_file_create = system_now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "get system time err: {:?},caller: {:?}",
-                err,
-                MaybeLocation::caller()
-            )
-        })?;
+    let system_time = std::time::SystemTime::now();
+    let duration_file_create = system_time.duration_since(std::time::UNIX_EPOCH)?;
 
     let mut file_entry_json = EntryOuput::default();
-
     file_entry_json.time_update_stamp = duration_file_create.as_millis();
+    file_entry_json.update_media(media);
 
     let mut index = IndexOuput::default();
 
-    file_entry_json.update_media(media);
-
-    let file_icon = DownloadFileResponse::from_url(
-        media.pic.as_str(),
-        NamedTempFile::new_in(tmp_path).map_err(|err| {
-            anyhow::anyhow!(
-                "can't not download temp file err: {:?},caller: {:?}",
-                err,
-                (file!(), line!())
-            )
-        })?,
-    )
-    .await?
-    .task()
-    .await?;
+    let file_icon = DownloadFilePending::from_tmp_url(tmp_path, media.pic.as_str())?
+        .into_response()
+        .await?
+        .task()
+        .await?;
 
     let MediaInfoResp {
         code,
         data,
         message,
-    } = BiliApi::request(MediaInfoAidPayload { aid: media.aid })
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "can't get media infomation err: {:?},caller: {:?}",
-                err,
-                (file!(), line!())
-            )
-        })
-        .await?;
+    } = BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await?;
 
     let (
         Some(MediaInfoData {
             owner,
             pages,
             staff: _,
-            cid,
+            cid: _,
         }),
         0,
     ) = (data, code)
@@ -287,21 +244,17 @@ pub async fn download(
             ..Default::default()
         })
         .exec(&db.db)
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "set media state err: {:?},caller: {:?}",
-                err,
-                MaybeLocation::caller()
-            )
-        })
         .await?;
 
-        return Err(anyhow!(
-            "Info unreachable media<{}-{}>: {}",
-            media.aid,
-            media.title,
-            message.unwrap_or_default()
-        ));
+        return Err(DownloadFileError::new(DownloadFileErrorKind::Page(
+            anyhow!(
+                "Info unreachable media<{}-{}-{}>: {}",
+                media.aid,
+                media.bvid,
+                media.title,
+                message.unwrap_or_default()
+            ),
+        )));
     };
 
     file_entry_json.update_owner(&owner);
@@ -324,22 +277,15 @@ pub async fn download(
                     timelength,
                 },
             ..
-        } = BiliApi::request(DashPayload::new(media.aid, cid).await.map_err(|err| {
-            anyhow::anyhow!(
-                "caller: {:?},aid:{:?},get response error:{:?}",
-                (file!(), line!()),
+        } = BiliApi::request(
+            DashPayload::new(
                 media.aid,
-                err,
+                cid,
+                system_time.duration_since(std::time::UNIX_EPOCH)?.as_secs(),
             )
-        })?)
-        .await
-        .map_err(|_err| {
-            anyhow!(
-                "caller: {:?},get dash payload err,maybe is pay media or other reason,bvid: {:?}",
-                (file!(), line!()),
-                media.bvid,
-            )
-        })?;
+            .await?,
+        )
+        .await?;
 
         file_entry_json.total_time_milli = timelength;
 
@@ -360,27 +306,20 @@ pub async fn download(
             Some(v) => {
                 file_entry_json.update_video(v);
 
-                let tmp = NamedTempFile::new_in(tmp_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "can't not download temp file err: {:?},caller: {:?}",
-                        err,
-                        MaybeLocation::caller()
-                    )
-                })?;
-                let file_video =
-                    DownloadFilePending::new_with_bg(v.base_url.as_str(), tmp, pb.clone())?
-                        .into_response()
-                        .await?
-                        .with(|res| {
-                            if let Ok(size) = res.try_headers_size() {
-                                file_entry_json.total_bytes += size;
-                                res.pg.as_ref().map(|pg| pg.inc_length(size));
-                            }
-                        })
-                        .task()
-                        .await?
-                        .reopen()
-                        .map(|file| TempFileReopen::new("video.m4s", file))?;
+                let file_video = DownloadFilePending::from_tmp_url(tmp_path, v.base_url.as_str())?
+                    .with_bg(pb.clone())
+                    .into_response()
+                    .await?
+                    .with(|res| {
+                        if let Ok(size) = res.try_headers_size() {
+                            file_entry_json.total_bytes += size;
+                            res.pg.as_ref().map(|pg| pg.inc_length(size));
+                        }
+                    })
+                    .task()
+                    .await?
+                    .reopen()
+                    .map(|file| TempFileReopen::new("video.m4s", file))?;
 
                 let (v_size, v_hex) = file_video.get_size_md5()?;
 
@@ -399,28 +338,20 @@ pub async fn download(
 
                 file_entry_json.update_audio(a);
 
-                let tmp = NamedTempFile::new_in(tmp_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "can't not download temp file err: {:?},caller: {:?}",
-                        err,
-                        MaybeLocation::caller()
-                    )
-                })?;
-
-                let file_audio =
-                    DownloadFilePending::new_with_bg(a.base_url.as_str(), tmp, pb.clone())?
-                        .into_response()
-                        .await?
-                        .with(|res| {
-                            if let Ok(size) = res.try_headers_size() {
-                                file_entry_json.total_bytes += size;
-                                res.pg.as_ref().map(|pg| pg.inc_length(size));
-                            }
-                        })
-                        .task()
-                        .await?
-                        .reopen()
-                        .map(|file| TempFileReopen::new("audio.m4s", file))?;
+                let file_audio = DownloadFilePending::from_tmp_url(tmp_path, a.base_url.as_str())?
+                    .with_bg(pb.clone())
+                    .into_response()
+                    .await?
+                    .with(|res| {
+                        if let Ok(size) = res.try_headers_size() {
+                            file_entry_json.total_bytes += size;
+                            res.pg.as_ref().map(|pg| pg.inc_length(size));
+                        }
+                    })
+                    .task()
+                    .await?
+                    .reopen()
+                    .map(|file| TempFileReopen::new("audio.m4s", file))?;
 
                 let (a_size, a_hex) = file_audio.get_size_md5()?;
                 index
@@ -441,29 +372,15 @@ pub async fn download(
             file_video
         });
 
-        let file_index = NamedTempFile::new_in(tmp_path).map_err(|err| {
-            anyhow::anyhow!(
-                "can't not download temp file err: {:?},caller: {:?}",
-                err,
-                MaybeLocation::caller()
-            )
-        })?;
+        let file_index = NamedTempFile::new_in(tmp_path)?;
 
         let file_danmu = {
-            let file_danmu = NamedTempFile::new_in(tmp_path).map_err(|err| {
-                anyhow::anyhow!(
-                    "can't not download temp file err: {:?},caller: {:?}",
-                    err,
-                    MaybeLocation::caller()
-                )
-            })?;
-
             let danmu_url = format!(
                 "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid={}&segment_index=1",
                 media.cid
             );
-
-            DownloadFileResponse::from_url(danmu_url, file_danmu)
+            DownloadFilePending::from_tmp_url(tmp_path, danmu_url)?
+                .into_response()
                 .await?
                 .task()
                 .await?
@@ -472,35 +389,20 @@ pub async fn download(
         };
 
         let file_danmu_xml = {
-            let mut file_danmu_xml = NamedTempFile::new_in(tmp_path).map_err(|err| {
-                anyhow::anyhow!(
-                    "can't not download temp file err: {:?},caller: {:?}",
-                    err,
-                    MaybeLocation::caller()
-                )
-            })?;
-
             let xml_url = format!("https://api.bilibili.com/x/v1/dm/list.so?oid={}", media.cid);
 
             let http_response = DownloadFilePending::response(xml_url).await?;
 
-            let bytes = http_response
-                .bytes()
-                .await
-                .context("Failed to read response bytes")?;
+            let bytes = http_response.bytes().await?;
 
             // 解压 deflate 数据
             let mut decoder = flate2::bufread::DeflateDecoder::new(&bytes[..]);
             let mut decompressed = Vec::new();
             use std::io::Read;
 
-            decoder.read_to_end(&mut decompressed).map_err(|err| {
-                anyhow::anyhow!(
-                    "unzip danmu xml error:{:?},caller:{:?}",
-                    err,
-                    MaybeLocation::caller()
-                )
-            })?;
+            decoder.read_to_end(&mut decompressed)?;
+
+            let mut file_danmu_xml = NamedTempFile::new_in(tmp_path)?;
 
             file_danmu_xml.write_all(&decompressed)?;
 
@@ -509,17 +411,8 @@ pub async fn download(
                 .map(|file| TempFileReopen::new("danmaku.xml", file))
         };
 
-        let file_entry = NamedTempFile::new_in(tmp_path).map_err(|err| {
-            anyhow::anyhow!(
-                "can't not download temp file err: {:?},caller: {:?}",
-                err,
-                MaybeLocation::caller()
-            )
-        })?;
-
         let index_writer = io::BufWriter::new(&file_index);
-        serde_json::to_writer_pretty(index_writer, &index)
-            .context("Can't upsert into index.json")?; // 使用 pretty 格式化输出;
+        serde_json::to_writer_pretty(index_writer, &index)?; // 使用 pretty 格式化输出;
 
         file_entry_json.downloaded_bytes = file_audio
             .as_ref()
@@ -533,21 +426,13 @@ pub async fn download(
         file_entry_json.page_data.from = "vupload".to_string();
         file_entry_json.is_completed = true;
 
-        let duration_file_update =
-            system_now
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "get system time error: {:?},caller: {:?}",
-                        err,
-                        MaybeLocation::caller()
-                    )
-                })?;
+        let duration_file_update = system_time.duration_since(std::time::UNIX_EPOCH)?;
         file_entry_json.time_create_stamp = duration_file_update.as_millis();
 
+        let file_entry = NamedTempFile::new_in(tmp_path)?;
+
         let entry_writer = io::BufWriter::new(&file_entry);
-        serde_json::to_writer_pretty(entry_writer, &file_entry_json)
-            .context("Can't upsert into index.json")?; // 使用 pretty 格式化输出;
+        serde_json::to_writer_pretty(entry_writer, &file_entry_json)?; // 使用 pretty 格式化输出;
 
         let file_entry = file_entry
             .reopen()
@@ -640,13 +525,10 @@ impl TempFileReopen {
         })
     }
 
-    pub fn get_size_md5(&self) -> Result<(u64, String)> {
+    pub fn get_size_md5(&self) -> Result<(u64, String), io::Error> {
         let mut file = self.tmp.try_clone()?;
 
-        let size = file
-            .metadata()
-            .context("Can't get index temp file metadata")?
-            .len();
+        let size = file.metadata()?.len();
 
         let mut v_context = md5::Context::new();
         let mut v_buffer = [0; 8192];
@@ -811,12 +693,23 @@ pub struct DownloadFilePending {
 }
 
 impl DownloadFilePending {
-    pub fn new<T: IntoUrl>(url: T, tmp: NamedTempFile) -> Result<Self, reqwest::Error> {
+    pub fn new<T: IntoUrl>(url: T, tmp: NamedTempFile) -> Result<Self, DownloadFileError> {
         Ok(Self {
             pg: None,
             url: url.into_url()?,
             tmp,
         })
+    }
+
+    #[track_caller]
+    pub fn from_tmp_url<P: AsRef<Path>, T: IntoUrl>(
+        dir: P,
+        url: T,
+    ) -> Result<Self, DownloadFileError> {
+        let tmp = NamedTempFile::new_in(dir)?;
+        let url = url.into_url()?;
+
+        Ok(Self { pg: None, tmp, url })
     }
 
     pub fn new_with_bg<T: IntoUrl>(
@@ -831,7 +724,7 @@ impl DownloadFilePending {
         })
     }
 
-    pub async fn into_response(self) -> Result<DownloadFileResponse> {
+    pub async fn into_response(self) -> Result<DownloadFileResponse, DownloadFileError> {
         let Self { pg, tmp, url } = self;
 
         let response = Self::response(url.as_str()).await?;
@@ -839,16 +732,16 @@ impl DownloadFilePending {
         Ok(DownloadFileResponse { pg, tmp, response })
     }
 
-    pub async fn response<T: IntoUrl>(url: T) -> Result<Response> {
+    pub async fn response<T: IntoUrl>(url: T) -> Result<Response, DownloadFileError> {
         // default client
         let client = BiliApi::client();
         let response = client.get(url).send().await?;
         Ok(response)
     }
 
-    pub fn progress_bar(&mut self, part: &str) -> Result<&mut Self> {
+    pub fn progress_bar(&mut self, part: &str) -> &mut Self {
         let Some(pg) = self.pg.as_mut() else {
-            return Err(anyhow::anyhow!("Not has progressbar"));
+            return self;
         };
 
         pg.set_message(format!("{:<10}", part));
@@ -858,13 +751,18 @@ impl DownloadFilePending {
                 .progress_chars("#>-"),
         );
 
-        Ok(self)
+        self
     }
 
-    pub fn set_bg(&mut self, dpb: DownloadProgressBar) -> Result<&mut Self> {
+    pub fn set_bg(&mut self, dpb: DownloadProgressBar) -> &mut Self {
         let _ = self.pg.insert(dpb);
 
-        Ok(self)
+        self
+    }
+
+    pub fn with_bg(mut self, dpb: DownloadProgressBar) -> Self {
+        self.set_bg(dpb);
+        self
     }
 }
 
@@ -900,11 +798,14 @@ impl DownloadFileResponse {
         Ok(size)
     }
 
-    pub fn into_task(self, runtimer: &mut TokioTasksRuntime) -> DownloadFile {
-        DownloadFile::new(self, runtimer)
+    pub fn into_task(self, runtimer: &mut TokioTasksRuntime) -> DownloadFileTask {
+        DownloadFileTask::new(self, runtimer)
     }
 
-    pub async fn from_url<T: IntoUrl>(url: T, tmp: NamedTempFile) -> Result<Self> {
+    pub async fn from_url<T: IntoUrl>(
+        url: T,
+        tmp: NamedTempFile,
+    ) -> Result<Self, DownloadFileError> {
         let response = DownloadFilePending::response(url).await?;
 
         Ok(Self {
@@ -918,12 +819,13 @@ impl DownloadFileResponse {
         &self.response
     }
 
-    pub async fn task(self) -> Result<NamedTempFile> {
+    pub async fn task(self) -> Result<NamedTempFile, DownloadFileError> {
         let Self {
             pg,
             mut tmp,
             mut response,
         } = self;
+
         loop {
             match response.chunk().await {
                 Ok(Some(chunk)) => {
@@ -935,7 +837,10 @@ impl DownloadFileResponse {
                 }
                 Ok(None) => break,
                 Err(e) => {
-                    return Err(anyhow!("Failed to download: {e}"));
+                    return Err(DownloadFileError {
+                        caller: MaybeLocation::caller(),
+                        error: DownloadFileErrorKind::Reqwest(e),
+                    });
                 }
             }
         }
@@ -945,9 +850,9 @@ impl DownloadFileResponse {
 }
 
 #[derive(Debug, Component)]
-pub struct DownloadFile(pub DbHandleResult<NamedTempFile, anyhow::Error>);
+pub struct DownloadFileTask(pub DbHandleResult<NamedTempFile, DownloadFileError>);
 
-impl DownloadFile {
+impl DownloadFileTask {
     pub fn new(response: DownloadFileResponse, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = runtimer.spawn_background_task(move |_ctx| response.task());
 
@@ -960,8 +865,143 @@ impl DownloadFile {
         runtimer: &mut TokioTasksRuntime,
         url: T,
         tmp: NamedTempFile,
-    ) -> Result<Self> {
+    ) -> Result<Self, DownloadFileError> {
         let response = DownloadFileResponse::from_url(url, tmp).await?;
         Ok(Self::new(response, runtimer))
+    }
+}
+
+#[derive(Debug)]
+pub struct DownloadFileError {
+    pub caller: MaybeLocation,
+    pub error: DownloadFileErrorKind,
+}
+
+impl DownloadFileError {
+    #[track_caller]
+    pub fn new(error: DownloadFileErrorKind) -> Self {
+        Self {
+            caller: MaybeLocation::caller(),
+            error,
+        }
+    }
+}
+
+impl std::error::Error for DownloadFileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.error {
+            DownloadFileErrorKind::Reqwest(e) => Some(e),
+            DownloadFileErrorKind::IO(e) => Some(e),
+            DownloadFileErrorKind::SystemTime(e) => Some(e),
+            DownloadFileErrorKind::ApiReq(e) => Some(e),
+            DownloadFileErrorKind::Db(e) => Some(e),
+            DownloadFileErrorKind::Serialize(e) => Some(e),
+            DownloadFileErrorKind::Status(error) => error.source(),
+            DownloadFileErrorKind::Page(e) => e.source(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DownloadFileErrorKind {
+    Reqwest(reqwest::Error),
+    IO(io::Error),
+    Status(anyhow::Error),
+    SystemTime(std::time::SystemTimeError),
+    ApiReq(api_req::error::ApiErr),
+    Db(sea_orm::DbErr),
+    Page(anyhow::Error),
+    Serialize(serde_json::Error),
+}
+
+impl std::fmt::Display for DownloadFileError {
+    #[track_caller]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.error {
+            DownloadFileErrorKind::Reqwest(error) => {
+                write!(f, "Reqwest error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::IO(error) => {
+                write!(f, "IO error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::Status(error) => {
+                write!(f, "status error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::SystemTime(error) => {
+                write!(f, "SystemTime error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::ApiReq(error) => {
+                write!(f, "ApiErr error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::Db(error) => {
+                write!(f, "Db error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::Page(error) => {
+                write!(f, "page error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::Serialize(error) => {
+                write!(f, "Serialize error:{}, caller:{:?}", error, self.caller)
+            }
+        }
+    }
+}
+
+impl From<io::Error> for DownloadFileError {
+    #[track_caller]
+    fn from(error: io::Error) -> Self {
+        Self {
+            caller: MaybeLocation::caller(),
+            error: DownloadFileErrorKind::IO(error),
+        }
+    }
+}
+
+impl From<reqwest::Error> for DownloadFileError {
+    #[track_caller]
+    fn from(error: reqwest::Error) -> Self {
+        Self {
+            caller: MaybeLocation::caller(),
+            error: DownloadFileErrorKind::Reqwest(error),
+        }
+    }
+}
+
+impl From<std::time::SystemTimeError> for DownloadFileError {
+    #[track_caller]
+    fn from(error: std::time::SystemTimeError) -> Self {
+        Self {
+            caller: MaybeLocation::caller(),
+            error: DownloadFileErrorKind::SystemTime(error),
+        }
+    }
+}
+
+impl From<api_req::error::ApiErr> for DownloadFileError {
+    #[track_caller]
+    fn from(error: api_req::error::ApiErr) -> Self {
+        Self {
+            caller: MaybeLocation::caller(),
+            error: DownloadFileErrorKind::ApiReq(error),
+        }
+    }
+}
+
+impl From<sea_orm::DbErr> for DownloadFileError {
+    #[track_caller]
+    fn from(error: sea_orm::DbErr) -> Self {
+        Self {
+            caller: MaybeLocation::caller(),
+            error: DownloadFileErrorKind::Db(error),
+        }
+    }
+}
+
+impl From<serde_json::Error> for DownloadFileError {
+    #[track_caller]
+    fn from(error: serde_json::Error) -> Self {
+        Self {
+            caller: MaybeLocation::caller(),
+            error: DownloadFileErrorKind::Serialize(error),
+        }
     }
 }

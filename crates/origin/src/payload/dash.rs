@@ -24,32 +24,19 @@ pub struct DashPayload {
 }
 
 impl DashPayload {
-    pub async fn new(avid: i64, cid: i64) -> Result<Self> {
+    pub async fn new(avid: i64, cid: i64, time: u64) -> Result<Self, api_req::error::ApiErr> {
         let mut this = Self {
             avid,
             cid,
             fnval: 16 | 64 | 128 | 1024,
             fourk: 1,
             qn: 127,
-            wts: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "get system time error: {:?},err: {:?}",
-                        err,
-                        (file!(), line!())
-                    )
-                })?
-                .as_secs(),
+            wts: time,
             wbi: None,
         };
         let WbiResp {
             data: WbiData { wbi_img, .. },
-        } = BiliApi::request(WbiPayload)
-            .map_err(|err| {
-                anyhow::anyhow!("get wbi err: {:?},caller:{:?}", err, (file!(), line!()))
-            })
-            .await?;
+        } = BiliApi::request(WbiPayload).await?;
         this.wbi = Some(WbiEncoder::encode(wbi_img, &this));
 
         Ok(this)
