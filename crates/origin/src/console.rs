@@ -154,22 +154,20 @@ impl ConsoleReadTask {
         }) {
             return Err(&ConsoleResultError::NotFinished);
         }
+        // if result is exit,will break not take result
+        if self.handle.as_mut().is_some_and(|task| {
+            task.try_result()
+                .is_ok_and(|result| matches!(result.command, ConsoleCommand::Exit))
+        }) {
+            return Ok(&ConsoleCommand::Exit);
+        }
 
-        let Some(mut task) = self.handle.take() else {
+        let Some(task) = self.handle.take() else {
             if self.error.is_none() {
                 let _ = self.error.insert(ConsoleResultError::ConsoleEmpty);
             }
             return Err(&ConsoleResultError::ConsoleEmpty);
         };
-
-        // if result is exit,will break not take result
-        if task
-            .try_result()
-            .is_ok_and(|result| matches!(result.command, ConsoleCommand::Exit))
-        {
-            let _ = self.handle.insert(task);
-            return Ok(&ConsoleCommand::Exit);
-        }
 
         match task.take_result() {
             Ok(ConsoleResult {
