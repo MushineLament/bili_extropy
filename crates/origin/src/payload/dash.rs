@@ -1,6 +1,5 @@
 use anyhow::Result;
 use api_req::{ApiCaller as _, Payload};
-use futures::TryFutureExt;
 use serde::Serialize;
 
 use crate::{

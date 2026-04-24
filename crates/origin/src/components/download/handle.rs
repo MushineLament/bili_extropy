@@ -12,7 +12,7 @@ use crate::{
     api::BiliApi,
     components::{
         download::{MediaInfoAidPayload, MediaInfoBvidPayload},
-        handle::{ECSHandle, ECSHandleError, ECSHandleResult},
+        handle::{ECSHandle, ECSHandleResult},
     },
     cookies::{add_cookie_jar, parse_cookies},
     db::Db,
@@ -200,8 +200,7 @@ pub async fn download(
     let folders = active_status
         .iter()
         .map(|model| Path::new(&model.path).join(&model.name))
-        .filter(|path| !path.exists() && fs::create_dir_all(path).is_ok())
-        .filter(|path| path.is_dir())
+        .filter(|path| path.is_dir() || (!path.exists() && fs::create_dir_all(path).is_ok()))
         .collect::<Vec<_>>();
 
     let system_time = std::time::SystemTime::now();
@@ -354,6 +353,8 @@ pub async fn download(
             .and_then(|a| {
                 file_entry_json.update_audio(a);
                 index_audio.update_audio(a);
+                index_video.update_audio_id(a.id);
+
                 DownloadFilePending::from_tmp_url(tmp_path, a.base_url.as_str()).ok()
             })
             .map(move |pending| {
@@ -376,8 +377,6 @@ pub async fn download(
                             .map(|file| TempFileReopen::new("audio.m4s", file))
                     })
             });
-
-        index_video.update_audio_id(index_audio.audio_id);
 
         let file_danmu = {
             let danmu_url = format!(
@@ -494,7 +493,7 @@ pub async fn download(
 
         serde_json::to_writer_pretty(index_writer, &index)?; // 使用 pretty 格式化输出;
 
-        let file_index = file_index
+        let file_index: std::result::Result<TempFileReopen, DownloadFileError> = file_index
             .reopen()
             .map(|file| TempFileReopen::new("index.json", file))
             .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::IO(err)));

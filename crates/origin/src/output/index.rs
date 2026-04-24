@@ -34,13 +34,9 @@ impl IndexVideo {
         self.backup_url = video.backup_url.clone();
         self.bandwidth = video.bandwidth;
         self.codecid = video.codecid;
-        self.audio_id = 0;
-        self.no_rexcode = false;
         self.frame_rate = video.frame_rate.clone();
         self.width = video.width;
         self.height = video.height;
-        self.widevine_pssh = "".to_string();
-        self.bilidrm_uri = "".to_string();
 
         self
     }
@@ -49,7 +45,7 @@ impl IndexVideo {
         self.audio_id = audio_id;
         self
     }
-    
+
     pub fn update_md5_size(&mut self, md5: String, size: u64) -> &mut Self {
         self.md5 = md5;
         self.size = size;
@@ -104,13 +100,9 @@ impl IndexAudio {
         self.backup_url = audio.backup_url.clone();
         self.bandwidth = audio.bandwidth;
         self.codecid = audio.codecid;
-        self.audio_id = 0;
-        self.no_rexcode = false;
         self.frame_rate = audio.frame_rate.clone();
         self.width = audio.width;
         self.height = audio.height;
-        self.widevine_pssh = "".to_string();
-        self.bilidrm_uri = "".to_string();
 
         self
     }
