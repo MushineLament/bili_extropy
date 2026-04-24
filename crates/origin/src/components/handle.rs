@@ -112,6 +112,11 @@ impl<T, E> ECSHandleInner<T, T, E> {
 
         data.as_mut().map_err(|err| &*err)
     }
+
+    pub fn block_on_take_result(mut self) -> Result<T, ECSHandleError<E>> {
+        let _ = self.block_on();
+        self.data
+    }
 }
 
 impl<T, E> ECSHandleInner<Result<T, E>, T, E> {
@@ -162,6 +167,11 @@ impl<T, E> ECSHandleInner<Result<T, E>, T, E> {
         *data = result.and_then(|result| result.map_err(|err| ECSHandleError::Error(err)));
 
         data.as_mut().map_err(|err: &mut ECSHandleError<E>| &*err)
+    }
+
+    pub fn block_on_take_result(mut self) -> Result<T, ECSHandleError<E>> {
+        let _ = self.block_on();
+        self.data
     }
 }
 
