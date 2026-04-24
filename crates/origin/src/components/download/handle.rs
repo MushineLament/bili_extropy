@@ -5,13 +5,14 @@ use std::{
     io::{self, ErrorKind, Seek as _, Write as _},
     mem,
     path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicU64},
 };
 
 use crate::{
     api::BiliApi,
     components::{
         download::{MediaInfoAidPayload, MediaInfoBvidPayload},
-        handle::{DbHandle, DbHandleResult},
+        handle::{ECSHandle, ECSHandleError, ECSHandleResult},
     },
     cookies::{add_cookie_jar, parse_cookies},
     db::Db,
@@ -86,7 +87,7 @@ impl DownloadWay {
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct DownloadHandle(pub DbHandle<Result<BvId, DownloadFileError>>);
+pub struct DownloadHandle(pub ECSHandle<Result<BvId, DownloadFileError>>);
 
 impl DownloadHandle {
     pub fn new<T: Into<String>>(
@@ -169,7 +170,7 @@ impl DownloadHandle {
         };
 
         let handle = runtimer.spawn_background_task(move |_ctx| task);
-        Self(DbHandle::new(handle))
+        Self(ECSHandle::new(handle))
     }
 }
 
@@ -210,13 +211,24 @@ pub async fn download(
     file_entry_json.time_update_stamp = duration_file_create.as_millis();
     file_entry_json.update_media(media);
 
+    let total_bytes = Arc::new(AtomicU64::new(0));
+
     let mut index = IndexOuput::default();
 
-    let file_icon = DownloadFilePending::from_tmp_url(tmp_path, media.pic.as_str())?
-        .into_response()
-        .await?
-        .task()
-        .await?;
+    let file_icon = DownloadFilePending::from_tmp_url(tmp_path, media.pic.as_str())?.spawn_handle(
+        |pending| async move {
+            pending
+                .into_response()
+                .await?
+                .task()
+                .await
+                .and_then(|file| Ok(file.reopen()?))
+                .map(|file| TempFileReopen::new("cover.jpg", file))
+        },
+    );
+
+    let mut handle_icon: ECSHandleResult<TempFileReopen, DownloadFileError> =
+        ECSHandleResult::new(file_icon);
 
     let MediaInfoResp {
         code,
@@ -302,77 +314,70 @@ pub async fn download(
         let pb = DownloadProgressBar::default();
         pb.progress_bar(&bars, &part);
 
-        let mut file_video = match v.as_ref() {
-            Some(v) => {
+        let (mut index_video, mut index_audio): (IndexVideo, IndexAudio) =
+            (Default::default(), Default::default());
+
+        let video_size = total_bytes.clone();
+        let video_pb = pb.clone();
+        let file_video = v
+            .as_ref()
+            .and_then(|v| {
                 file_entry_json.update_video(v);
-
-                let file_video = DownloadFilePending::from_tmp_url(tmp_path, v.base_url.as_str())?
-                    .with_bg(pb.clone())
-                    .into_response()
-                    .await?
-                    .with(|res| {
-                        if let Ok(size) = res.try_headers_size() {
-                            file_entry_json.total_bytes += size;
-                            res.pg.as_ref().map(|pg| pg.inc_length(size));
-                        }
+                index_video.update_video(v);
+                DownloadFilePending::from_tmp_url(tmp_path, v.base_url.as_str()).ok()
+            })
+            .map(move |pending| {
+                pending
+                    .with_bg(video_pb.clone())
+                    .spawn_handle(|pending| async move {
+                        pending
+                            .into_response()
+                            .await?
+                            .with(|res| {
+                                if let Ok(size) = res.try_headers_size() {
+                                    video_size
+                                        .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+                                    res.pg.as_ref().map(|pg| pg.inc_length(size));
+                                }
+                            })
+                            .task()
+                            .await
+                            .and_then(|file| Ok(file.reopen()?))
+                            .map(|file| TempFileReopen::new("video.m4s", file))
                     })
-                    .task()
-                    .await?
-                    .reopen()
-                    .map(|file| TempFileReopen::new("video.m4s", file))?;
+            });
 
-                let (v_size, v_hex) = file_video.get_size_md5()?;
-
-                let index = IndexVideo::from_video(v.clone(), v_hex, v_size);
-
-                Some((file_video, index))
-            }
-            _ => None,
-        };
-
-        let file_audio = match a.as_ref() {
-            Some(a) => {
-                if let Some((_, video)) = file_video.as_mut() {
-                    video.update_audio_id(a.id);
-                }
-
+        let audio_size = total_bytes.clone();
+        let audio_pb = pb.clone();
+        let file_audio = a
+            .as_ref()
+            .and_then(|a| {
                 file_entry_json.update_audio(a);
-
-                let file_audio = DownloadFilePending::from_tmp_url(tmp_path, a.base_url.as_str())?
-                    .with_bg(pb.clone())
-                    .into_response()
-                    .await?
-                    .with(|res| {
-                        if let Ok(size) = res.try_headers_size() {
-                            file_entry_json.total_bytes += size;
-                            res.pg.as_ref().map(|pg| pg.inc_length(size));
-                        }
+                index_audio.update_audio(a);
+                DownloadFilePending::from_tmp_url(tmp_path, a.base_url.as_str()).ok()
+            })
+            .map(move |pending| {
+                pending
+                    .with_bg(audio_pb.clone())
+                    .spawn_handle(|pending| async move {
+                        pending
+                            .into_response()
+                            .await?
+                            .with(|res| {
+                                if let Ok(size) = res.try_headers_size() {
+                                    audio_size
+                                        .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+                                    res.pg.as_ref().map(|pg| pg.inc_length(size));
+                                }
+                            })
+                            .task()
+                            .await
+                            .and_then(|file| Ok(file.reopen()?))
+                            .map(|file| TempFileReopen::new("audio.m4s", file))
                     })
-                    .task()
-                    .await?
-                    .reopen()
-                    .map(|file| TempFileReopen::new("audio.m4s", file))?;
+            });
 
-                let (a_size, a_hex) = file_audio.get_size_md5()?;
-                index
-                    .audio
-                    .push(IndexAudio::from_audio(a.clone(), a_hex, a_size));
-
-                Some(file_audio)
-            }
-            _ => None,
-        };
-
-        file_video.as_ref().map(|file| {
-            info!("file_video size 1:{:?}", file.0.size());
-        });
-
-        let file_video = file_video.map(|(file_video, index_video)| {
-            index.video.push(index_video);
-            file_video
-        });
-
-        let file_index = NamedTempFile::new_in(tmp_path)?;
+        index_video.update_audio_id(index_audio.audio_id);
 
         let file_danmu = {
             let danmu_url = format!(
@@ -411,17 +416,7 @@ pub async fn download(
                 .map(|file| TempFileReopen::new("danmaku.xml", file))
         };
 
-        let index_writer = io::BufWriter::new(&file_index);
-        serde_json::to_writer_pretty(index_writer, &index)?; // 使用 pretty 格式化输出;
-
-        file_entry_json.downloaded_bytes = file_audio
-            .as_ref()
-            .and_then(|a| a.size().ok())
-            .unwrap_or_default()
-            + file_video
-                .as_ref()
-                .and_then(|v| v.size().ok())
-                .unwrap_or_default();
+        file_entry_json.downloaded_bytes = pb.position();
 
         file_entry_json.page_data.from = "vupload".to_string();
         file_entry_json.is_completed = true;
@@ -429,20 +424,24 @@ pub async fn download(
         let duration_file_update = system_time.duration_since(std::time::UNIX_EPOCH)?;
         file_entry_json.time_create_stamp = duration_file_update.as_millis();
 
-        let file_entry = NamedTempFile::new_in(tmp_path)?;
+        file_entry_json.total_bytes = total_bytes.load(std::sync::atomic::Ordering::Relaxed);
 
-        let entry_writer = io::BufWriter::new(&file_entry);
-        serde_json::to_writer_pretty(entry_writer, &file_entry_json)?; // 使用 pretty 格式化输出;
+        let file_entry = {
+            let file_entry = NamedTempFile::new_in(tmp_path)?;
 
-        let file_entry = file_entry
-            .reopen()
-            .map(|file| TempFileReopen::new("entry.json", file));
+            let entry_writer = io::BufWriter::new(&file_entry);
+            serde_json::to_writer_pretty(entry_writer, &file_entry_json)?; // 使用 pretty 格式化输出;
 
-        let file_icon = file_icon
-            .reopen()
-            .map(|file| TempFileReopen::new("cover.jpg", file));
+            file_entry
+                .reopen()
+                .map(|file| TempFileReopen::new("entry.json", file))
+        };
 
-        let info_files = [file_danmu, file_danmu_xml, file_entry, file_icon];
+        let mut info_files = vec![file_danmu, file_danmu_xml, file_entry];
+
+        if let Ok(file_icon) = handle_icon.block_on() {
+            info_files.push(file_icon.try_clone())
+        };
 
         // 视频id目录下
         for folder in folders
@@ -459,19 +458,48 @@ pub async fn download(
             tmptofolder.add_path_and_files(folder, files);
         }
 
+        let mut medias_files = vec![];
+
+        if let Some(file_video) = file_video
+            && let Ok(file_video) = file_video.await
+        {
+            if let Ok(file_video) = file_video.as_ref()
+                && let Ok((size, md5)) = file_video.get_size_md5()
+            {
+                index_video.update_md5_size(md5, size);
+            }
+
+            medias_files.push(file_video);
+        }
+
+        if let Some(file_audio) = file_audio
+            && let Ok(file_audio) = file_audio.await
+        {
+            if let Ok(file_audio) = file_audio.as_ref()
+                && let Ok((size, md5)) = file_audio.get_size_md5()
+            {
+                index_audio.update_md5_size(md5, size);
+            }
+
+            medias_files.push(file_audio);
+        }
+
+        // index.json
+        let file_index = NamedTempFile::new_in(tmp_path)?;
+
+        let index_writer = io::BufWriter::new(&file_index);
+
+        index.video.push(index_video);
+        index.audio.push(index_audio);
+
+        serde_json::to_writer_pretty(index_writer, &index)?; // 使用 pretty 格式化输出;
+
         let file_index = file_index
             .reopen()
             .map(|file| TempFileReopen::new("index.json", file))
-            .map_err(|err| {
-                error!("TODO!:{:?}", err);
-            })
-            .ok();
+            .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::IO(err)));
 
-        file_video.as_ref().map(|file| {
-            info!("file_video size:{:?}", file.size());
-        });
-
-        let medias_files = [file_video, file_audio, file_index];
+        medias_files.push(file_index);
 
         // 视频清晰度目录下
         for folder in folders
@@ -482,7 +510,7 @@ pub async fn download(
         {
             let files = medias_files
                 .iter()
-                .filter_map(|file| file.as_ref())
+                .filter_map(|file| file.as_ref().ok())
                 .map(|file| file.try_clone())
                 .filter_map(|file| file.ok());
 
@@ -764,6 +792,15 @@ impl DownloadFilePending {
         self.set_bg(dpb);
         self
     }
+
+    pub fn spawn_handle<F, O, T>(self, func: F) -> tokio::task::JoinHandle<T>
+    where
+        F: FnOnce(Self) -> O + Send + 'static,
+        O: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        tokio::spawn(async move { func(self).await })
+    }
 }
 
 #[derive(Debug)]
@@ -798,8 +835,13 @@ impl DownloadFileResponse {
         Ok(size)
     }
 
-    pub fn into_task(self, runtimer: &mut TokioTasksRuntime) -> DownloadFileTask {
+    pub fn by_task(self, runtimer: &mut TokioTasksRuntime) -> DownloadFileTask {
         DownloadFileTask::new(self, runtimer)
+    }
+
+    pub fn into_task(self) -> DownloadFileTask {
+        let handle = tokio::spawn(async move { self.task().await });
+        DownloadFileTask(ECSHandleResult::new(handle))
     }
 
     pub async fn from_url<T: IntoUrl>(
@@ -847,16 +889,25 @@ impl DownloadFileResponse {
 
         Ok(tmp)
     }
+
+    pub fn spawn_handle<F, O, T>(self, func: F) -> tokio::task::JoinHandle<T>
+    where
+        F: FnOnce(Self) -> O + Send + 'static,
+        O: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        tokio::spawn(async move { func(self).await })
+    }
 }
 
 #[derive(Debug, Component)]
-pub struct DownloadFileTask(pub DbHandleResult<NamedTempFile, DownloadFileError>);
+pub struct DownloadFileTask(pub ECSHandleResult<NamedTempFile, DownloadFileError>);
 
 impl DownloadFileTask {
     pub fn new(response: DownloadFileResponse, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = runtimer.spawn_background_task(move |_ctx| response.task());
 
-        let handle = DbHandleResult::new(task);
+        let handle = ECSHandleResult::new(task);
 
         Self(handle)
     }

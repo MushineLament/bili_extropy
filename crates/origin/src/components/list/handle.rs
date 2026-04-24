@@ -6,7 +6,7 @@ use bevy_tokio_tasks::TokioTasksRuntime;
 use sea_orm::EntityTrait as _;
 
 use crate::{
-    components::handle::DbHandleResult,
+    components::handle::ECSHandleResult,
     db::Db,
     entity::{
         account::{self, AccountModel},
@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ListMedias(pub DbHandleResult<Vec<MediaModel>, anyhow::Error>);
+pub struct ListMedias(pub ECSHandleResult<Vec<MediaModel>, anyhow::Error>);
 
 impl ListMedias {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
@@ -24,12 +24,12 @@ impl ListMedias {
             Ok(medias)
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(DbHandleResult::new(handle))
+        Self(ECSHandleResult::new(handle))
     }
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListAccountTask(pub DbHandleResult<Vec<AccountModel>, anyhow::Error>);
+pub struct ListAccountTask(pub ECSHandleResult<Vec<AccountModel>, anyhow::Error>);
 
 impl ListAccountTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
@@ -38,6 +38,6 @@ impl ListAccountTask {
             Ok(medias)
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(DbHandleResult::new(handle))
+        Self(ECSHandleResult::new(handle))
     }
 }

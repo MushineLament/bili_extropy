@@ -28,28 +28,54 @@ pub struct IndexVideo {
 }
 
 impl IndexVideo {
-    pub fn from_video(video: Video, md5: String, size: u64) -> Self {
-        Self {
-            id: video.id,
-            base_url: video.base_url,
-            backup_url: video.backup_url,
-            bandwidth: video.bandwidth,
-            codecid: video.codecid,
-            md5,
-            size,
-            audio_id: 0,
-            no_rexcode: false,
-            frame_rate: video.frame_rate,
-            width: video.width,
-            height: video.height,
-            widevine_pssh: "".to_string(),
-            bilidrm_uri: "".to_string(),
-        }
+    pub fn update_video(&mut self, video: &Video) -> &mut Self {
+        self.id = video.id;
+        self.base_url = video.base_url.clone();
+        self.backup_url = video.backup_url.clone();
+        self.bandwidth = video.bandwidth;
+        self.codecid = video.codecid;
+        self.audio_id = 0;
+        self.no_rexcode = false;
+        self.frame_rate = video.frame_rate.clone();
+        self.width = video.width;
+        self.height = video.height;
+        self.widevine_pssh = "".to_string();
+        self.bilidrm_uri = "".to_string();
+
+        self
     }
 
     pub fn update_audio_id(&mut self, audio_id: i64) -> &mut Self {
         self.audio_id = audio_id;
         self
+    }
+    
+    pub fn update_md5_size(&mut self, md5: String, size: u64) -> &mut Self {
+        self.md5 = md5;
+        self.size = size;
+
+        self
+    }
+}
+
+impl Default for IndexVideo {
+    fn default() -> Self {
+        Self {
+            id: Default::default(),
+            base_url: Url::parse("http://127.0.0.0").expect("default url error"),
+            backup_url: Default::default(),
+            bandwidth: Default::default(),
+            codecid: Default::default(),
+            md5: Default::default(),
+            size: Default::default(),
+            audio_id: Default::default(),
+            no_rexcode: Default::default(),
+            frame_rate: Default::default(),
+            width: Default::default(),
+            height: Default::default(),
+            widevine_pssh: Default::default(),
+            bilidrm_uri: Default::default(),
+        }
     }
 }
 
@@ -72,22 +98,48 @@ pub struct IndexAudio {
 }
 
 impl IndexAudio {
-    pub fn from_audio(audio: Audio, md5: String, size: u64) -> Self {
+    pub fn update_audio(&mut self, audio: &Audio) -> &mut Self {
+        self.id = audio.id;
+        self.base_url = audio.base_url.clone();
+        self.backup_url = audio.backup_url.clone();
+        self.bandwidth = audio.bandwidth;
+        self.codecid = audio.codecid;
+        self.audio_id = 0;
+        self.no_rexcode = false;
+        self.frame_rate = audio.frame_rate.clone();
+        self.width = audio.width;
+        self.height = audio.height;
+        self.widevine_pssh = "".to_string();
+        self.bilidrm_uri = "".to_string();
+
+        self
+    }
+
+    pub fn update_md5_size(&mut self, md5: String, size: u64) -> &mut Self {
+        self.md5 = md5;
+        self.size = size;
+
+        self
+    }
+}
+
+impl Default for IndexAudio {
+    fn default() -> Self {
         Self {
-            id: audio.id,
-            base_url: audio.base_url,
-            backup_url: audio.backup_url,
-            bandwidth: audio.bandwidth,
-            codecid: audio.codecid,
-            md5,
-            size,
-            audio_id: 0,
-            no_rexcode: false,
-            frame_rate: audio.frame_rate,
-            width: audio.width,
-            height: audio.height,
-            widevine_pssh: "".to_string(),
-            bilidrm_uri: "".to_string(),
+            id: Default::default(),
+            base_url: Url::parse("http://127.0.0.0").expect("default url error"),
+            backup_url: Default::default(),
+            bandwidth: Default::default(),
+            codecid: Default::default(),
+            md5: Default::default(),
+            size: Default::default(),
+            audio_id: Default::default(),
+            no_rexcode: Default::default(),
+            frame_rate: Default::default(),
+            width: Default::default(),
+            height: Default::default(),
+            widevine_pssh: Default::default(),
+            bilidrm_uri: Default::default(),
         }
     }
 }

@@ -15,7 +15,7 @@ use bevy_tokio_tasks::TokioTasksRuntime;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use tracing::{error, info};
 
-use crate::components::handle::{DbHandle, DbHandleError};
+use crate::components::handle::{ECSHandle, ECSHandleError};
 
 pub const APP_NAME: &str = "bili_extropy_ecs";
 
@@ -60,7 +60,7 @@ impl Default for Console {
 #[derive(Debug, Resource, Deref, DerefMut)]
 pub struct ConsoleReadTask {
     #[deref]
-    pub handle: Option<DbHandle<ConsoleResult>>,
+    pub handle: Option<ECSHandle<ConsoleResult>>,
     pub error: Option<ConsoleResultError>,
     pub result: Option<ConsoleCommand>,
 }
@@ -68,7 +68,7 @@ pub struct ConsoleReadTask {
 impl ConsoleReadTask {
     pub fn new(console: Console, runtimer: &mut TokioTasksRuntime) -> Self {
         Self {
-            handle: Some(DbHandle::new(Self::spawn_task(console, runtimer))),
+            handle: Some(ECSHandle::new(Self::spawn_task(console, runtimer))),
             error: None,
             result: None,
         }
@@ -154,7 +154,7 @@ impl ConsoleReadTask {
                 command: ConsoleCommand::Exit,
             }) => Ok(self.result.insert(ConsoleCommand::Exit)),
             Ok(ConsoleResult { console, command }) => {
-                self.handle = Some(DbHandle::new(Self::spawn_task(console, runtimer)));
+                self.handle = Some(ECSHandle::new(Self::spawn_task(console, runtimer)));
 
                 Ok(self.result.insert(command))
             }
@@ -189,7 +189,7 @@ pub struct ConsoleResult {
 
 #[derive(Debug)]
 pub enum ConsoleResultError {
-    DbHandleError(DbHandleError<()>),
+    DbHandleError(ECSHandleError<()>),
     ConsoleEmpty,
     NotFinished,
 }

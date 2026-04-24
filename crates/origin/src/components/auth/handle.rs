@@ -13,7 +13,7 @@ use tracing::{error, info};
 
 use crate::{
     api::{AuthApi, BiliApi},
-    components::handle::DbHandleResult,
+    components::handle::ECSHandleResult,
     cookies::current_cookies,
     db::Db,
     entity::{
@@ -26,7 +26,7 @@ use crate::{
 };
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct AuthLoginTask(pub DbHandleResult<AccountModel, anyhow::Error>);
+pub struct AuthLoginTask(pub ECSHandleResult<AccountModel, anyhow::Error>);
 
 impl AuthLoginTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
@@ -96,14 +96,14 @@ impl AuthLoginTask {
 
         let task = runtimer.spawn_background_task(move |_ctx| task);
 
-        let task = DbHandleResult::new(task);
+        let task = ECSHandleResult::new(task);
 
         Self(task)
     }
 }
 
 #[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ActiveAccounts(pub DbHandleResult<Vec<AccountModel>, anyhow::Error>);
+pub struct ActiveAccounts(pub ECSHandleResult<Vec<AccountModel>, anyhow::Error>);
 
 impl ActiveAccounts {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
@@ -118,7 +118,7 @@ impl ActiveAccounts {
 
         let task = runtimer.spawn_background_task(move |_ctx| task);
 
-        let task = DbHandleResult::new(task);
+        let task = ECSHandleResult::new(task);
 
         Self(task)
     }

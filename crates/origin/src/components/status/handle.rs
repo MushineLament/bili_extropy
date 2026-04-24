@@ -11,7 +11,7 @@ use sea_orm::{ColumnTrait, EntityTrait as _, QueryFilter};
 use strum::{Display, EnumString};
 
 use crate::{
-    components::handle::DbHandleResult,
+    components::handle::ECSHandleResult,
     db::Db,
     entity::status::{self, StatusActiveModel, StatusEntity, StatusModel},
 };
@@ -24,7 +24,7 @@ pub enum StatusState {
 }
 
 #[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ActiveStatus(pub DbHandleResult<Cow<'static, Vec<StatusModel>>, anyhow::Error>);
+pub struct ActiveStatus(pub ECSHandleResult<Cow<'static, Vec<StatusModel>>, anyhow::Error>);
 
 impl ActiveStatus {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
@@ -38,12 +38,12 @@ impl ActiveStatus {
 
         let handle = runtimer.spawn_background_task(|_ctx| task);
 
-        Self(DbHandleResult::new(handle))
+        Self(ECSHandleResult::new(handle))
     }
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct AddStatusTask(pub DbHandleResult<StatusModel, anyhow::Error>);
+pub struct AddStatusTask(pub ECSHandleResult<StatusModel, anyhow::Error>);
 
 impl AddStatusTask {
     pub fn new(
@@ -92,6 +92,6 @@ impl AddStatusTask {
 
         let handle = runtimer.spawn_background_task(|_ctx| task);
 
-        Self(DbHandleResult::new(handle))
+        Self(ECSHandleResult::new(handle))
     }
 }

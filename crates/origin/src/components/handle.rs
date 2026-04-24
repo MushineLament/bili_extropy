@@ -3,33 +3,33 @@ use bevy::ecs::change_detection::MaybeLocation;
 use tokio::task::{JoinError, JoinHandle};
 
 #[derive(Debug)]
-pub enum DbHandleError<E> {
+pub enum ECSHandleError<E> {
     NotFinished,
     JoinError(JoinError),
     Error(E),
 }
 
-impl<E> DbHandleError<E> {
+impl<E> ECSHandleError<E> {
     pub fn is_finished(&self) -> bool {
         match self {
-            DbHandleError::NotFinished => false,
+            ECSHandleError::NotFinished => false,
             _ => true,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct DbHandleInner<O, T, E> {
+pub struct ECSHandleInner<O, T, E> {
     handle: JoinHandle<O>,
-    data: Result<T, DbHandleError<E>>,
+    data: Result<T, ECSHandleError<E>>,
     caller: MaybeLocation,
 }
 
-pub type DbHandle<T, E = ()> = DbHandleInner<T, T, E>;
+pub type ECSHandle<T, E = ()> = ECSHandleInner<T, T, E>;
 
-pub type DbHandleResult<T, E> = DbHandleInner<Result<T, E>, T, E>;
+pub type ECSHandleResult<T, E> = ECSHandleInner<Result<T, E>, T, E>;
 
-impl<O, T, E> DbHandleInner<O, T, E> {
+impl<O, T, E> ECSHandleInner<O, T, E> {
     pub fn caller(&self) -> MaybeLocation {
         self.caller
     }
@@ -42,16 +42,16 @@ impl<O, T, E> DbHandleInner<O, T, E> {
         self.handle
     }
 
-    pub fn get_result(&self) -> Result<&T, &DbHandleError<E>> {
+    pub fn get_result(&self) -> Result<&T, &ECSHandleError<E>> {
         self.data.as_ref()
     }
 
-    pub fn get_result_mut(&mut self) -> Result<&mut T, &DbHandleError<E>> {
+    pub fn get_result_mut(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
         self.data.as_mut().map_err(|err| &*err)
     }
 
     /// not any check,wrap!
-    pub fn take_result(self) -> Result<T, DbHandleError<E>> {
+    pub fn take_result(self) -> Result<T, ECSHandleError<E>> {
         self.data
     }
 
@@ -63,17 +63,17 @@ impl<O, T, E> DbHandleInner<O, T, E> {
     }
 }
 
-impl<T, E> DbHandleInner<T, T, E> {
+impl<T, E> ECSHandleInner<T, T, E> {
     #[track_caller]
     pub fn new(handle: JoinHandle<T>) -> Self {
         Self {
             handle,
-            data: Err(DbHandleError::NotFinished),
+            data: Err(ECSHandleError::NotFinished),
             caller: MaybeLocation::caller(),
         }
     }
 
-    pub fn try_result(&mut self) -> Result<&mut T, &DbHandleError<E>> {
+    pub fn try_result(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
         let Self {
             handle,
             data,
@@ -85,28 +85,28 @@ impl<T, E> DbHandleInner<T, T, E> {
         }
 
         if !handle.is_finished() {
-            return Err(&DbHandleError::NotFinished);
+            return Err(&ECSHandleError::NotFinished);
         }
 
-        let result = bevy::tasks::block_on(handle).map_err(|err| DbHandleError::JoinError(err));
+        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
 
         *data = result;
 
         data.as_mut().map_err(|err| &*err)
     }
 
-    pub fn block_on(&mut self) -> Result<&mut T, &DbHandleError<E>> {
+    pub fn block_on(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
         let Self {
             handle,
             data,
             caller: _,
         } = self;
 
-        if !matches!(data, Err(DbHandleError::NotFinished)) {
+        if !matches!(data, Err(ECSHandleError::NotFinished)) {
             return data.as_mut().map_err(|err| &*err);
         }
 
-        let result = bevy::tasks::block_on(handle).map_err(|err| DbHandleError::JoinError(err));
+        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
 
         *data = result;
 
@@ -114,17 +114,17 @@ impl<T, E> DbHandleInner<T, T, E> {
     }
 }
 
-impl<T, E> DbHandleInner<Result<T, E>, T, E> {
+impl<T, E> ECSHandleInner<Result<T, E>, T, E> {
     #[track_caller]
     pub fn new(handle: JoinHandle<Result<T, E>>) -> Self {
         Self {
             handle,
-            data: Err(DbHandleError::NotFinished),
+            data: Err(ECSHandleError::NotFinished),
             caller: MaybeLocation::caller(),
         }
     }
 
-    pub fn try_result(&mut self) -> Result<&mut T, &DbHandleError<E>> {
+    pub fn try_result(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
         let Self {
             handle,
             data,
@@ -136,32 +136,32 @@ impl<T, E> DbHandleInner<Result<T, E>, T, E> {
         }
 
         if !handle.is_finished() {
-            return Err(&DbHandleError::NotFinished);
+            return Err(&ECSHandleError::NotFinished);
         }
 
-        let result = bevy::tasks::block_on(handle).map_err(|err| DbHandleError::JoinError(err));
+        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
 
-        *data = result.and_then(|result| result.map_err(|err| DbHandleError::Error(err)));
+        *data = result.and_then(|result| result.map_err(|err| ECSHandleError::Error(err)));
 
         data.as_mut().map_err(|err| &*err)
     }
 
-    pub fn block_on(&mut self) -> Result<&mut T, &DbHandleError<E>> {
+    pub fn block_on(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
         let Self {
             handle,
             data,
             caller: _,
         } = self;
 
-        if !matches!(data, Err(DbHandleError::NotFinished)) {
+        if !matches!(data, Err(ECSHandleError::NotFinished)) {
             return data.as_mut().map_err(|err| &*err);
         }
 
-        let result = bevy::tasks::block_on(handle).map_err(|err| DbHandleError::JoinError(err));
+        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
 
-        *data = result.and_then(|result| result.map_err(|err| DbHandleError::Error(err)));
+        *data = result.and_then(|result| result.map_err(|err| ECSHandleError::Error(err)));
 
-        data.as_mut().map_err(|err: &mut DbHandleError<E>| &*err)
+        data.as_mut().map_err(|err: &mut ECSHandleError<E>| &*err)
     }
 }
 
@@ -184,7 +184,7 @@ mod tests {
                 Result::<(), ()>::Ok(())
             });
 
-            let mut handle = DbHandleInner::<Result<(), ()>, (), ()>::new(task);
+            let mut handle = ECSHandleInner::<Result<(), ()>, (), ()>::new(task);
 
             assert!(!handle.is_finished());
 
