@@ -19,6 +19,8 @@ use crate::components::handle::{ECSHandle, ECSHandleError};
 
 pub const APP_NAME: &str = "bili_extropy_ecs";
 
+pub const HISTROY: &str = ".temp/.histroy.txt";
+
 #[derive(Debug, Deref, DerefMut)]
 pub struct Console(pub DefaultEditor);
 
@@ -66,7 +68,10 @@ pub struct ConsoleReadTask {
 }
 
 impl ConsoleReadTask {
-    pub fn new(console: Console, runtimer: &mut TokioTasksRuntime) -> Self {
+    pub fn new(mut console: Console, runtimer: &mut TokioTasksRuntime) -> Self {
+        if let Err(e) = console.load_history(HISTROY) {
+            error!("read history txt error: {}", e);
+        }
         Self {
             handle: Some(ECSHandle::new(Self::spawn_task(console, runtimer))),
             error: None,
@@ -106,6 +111,15 @@ impl ConsoleReadTask {
                     };
                 }
 
+                if !line.is_empty() {
+                    match console.add_history_entry(line) {
+                        Ok(_bool) => (),
+                        Err(err) => {
+                            error!("readline add histroy error:{:?}", err);
+                        }
+                    };
+                }
+
                 info!("读到命令:{:?}", line);
 
                 match console.execute_line(line) {
@@ -141,12 +155,21 @@ impl ConsoleReadTask {
             return Err(&ConsoleResultError::NotFinished);
         }
 
-        let Some(task) = self.handle.take() else {
+        let Some(mut task) = self.handle.take() else {
             if self.error.is_none() {
                 let _ = self.error.insert(ConsoleResultError::ConsoleEmpty);
             }
             return Err(&ConsoleResultError::ConsoleEmpty);
         };
+
+        // if result is exit,will break not take result
+        if task
+            .try_result()
+            .is_ok_and(|result| matches!(result.command, ConsoleCommand::Exit))
+        {
+            let _ = self.handle.insert(task);
+            return Ok(&ConsoleCommand::Exit);
+        }
 
         match task.take_result() {
             Ok(ConsoleResult {
@@ -229,7 +252,25 @@ fn console_task(
         }
         ConsoleCommand::Exit => {
             info!("custom input app exit command");
+
             commands.write_message(AppExit::Success);
+
+            let Some(input) = input.handle.take() else {
+                error!("lost Console");
+                return;
+            };
+
+            let mut result = match input.take_result() {
+                Ok(result) => result,
+                Err(err) => {
+                    error!("Console error:{:?}", err);
+                    return;
+                }
+            };
+
+            if let Err(err) = result.console.save_history(HISTROY) {
+                error!("Console save history error:{:?}", err);
+            };
         }
     }
 }
