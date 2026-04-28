@@ -9,7 +9,7 @@ use bevy::{
     },
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::{
     components::{
@@ -71,7 +71,7 @@ pub fn spawn_list_task(
                     }
                 };
 
-                println!("{}\nrows: {}", table, table.count_rows() - 1);
+                info!("\n{}\nrows: {}", table, table.count_rows() - 1);
             }
             Some("download") => {
                 let count = query.count();
@@ -95,6 +95,6 @@ pub fn list_account_finished(mut commands: Commands, query: Query<(&mut ListAcco
         commands.entity(entity).despawn();
 
         let table = result.iter().table_head(["account_id", "name", "state"]);
-        println!("{}\nrows: {}", table, table.count_rows() - 1);
+        eprintln!("{}\nrows: {}", table, table.count_rows() - 1);
     }
 }

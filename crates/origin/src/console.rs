@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use anyhow::Result;
 use bevy::{
-    app::{AppExit, Plugin, PreUpdate, Startup},
+    app::{AppExit, Last, Plugin, PreUpdate, Startup},
     ecs::{
         change_detection::MaybeLocation,
         message::Message,
@@ -59,11 +59,12 @@ impl Default for Console {
     }
 }
 
-#[derive(Debug, Resource, Deref, DerefMut)]
+#[derive(Debug, Resource)]
 pub struct ConsoleReadTask {
-    #[deref]
-    pub handle: Option<ECSHandle<ConsoleResult>>,
+    pub handle: ECSHandle<ConsoleResult>,
+    // last error
     pub error: Option<ConsoleResultError>,
+    // last result
     pub result: Option<ConsoleCommand>,
 }
 
@@ -73,7 +74,7 @@ impl ConsoleReadTask {
             error!("read history txt error: {}", e);
         }
         Self {
-            handle: Some(ECSHandle::new(Self::spawn_task(console, runtimer))),
+            handle: ECSHandle::new(Self::spawn_task(console, runtimer)),
             error: None,
             result: None,
         }
@@ -144,49 +145,46 @@ impl ConsoleReadTask {
         runtimer.spawn_background_task(|_ctx| console_task)
     }
 
+    #[track_caller]
     pub fn try_repeat(
         &mut self,
         runtimer: &mut TokioTasksRuntime,
     ) -> Result<&ConsoleCommand, &ConsoleResultError> {
-        if self.handle.as_mut().is_some_and(|handle| {
-            let _ = handle.try_result();
-            !handle.is_finished()
-        }) {
+        if !self.is_finished_mut() {
             return Err(&ConsoleResultError::NotFinished);
         }
-        // if result is exit,will break not take result
-        if self.handle.as_mut().is_some_and(|task| {
-            task.try_result()
-                .is_ok_and(|result| matches!(result.command, ConsoleCommand::Exit))
-        }) {
-            return Ok(&ConsoleCommand::Exit);
-        }
 
-        let Some(task) = self.handle.take() else {
-            if self.error.is_none() {
-                let _ = self.error.insert(ConsoleResultError::ConsoleEmpty);
-            }
-            return Err(&ConsoleResultError::ConsoleEmpty);
-        };
-
-        match task.take_result() {
+        match self.handle.take_result() {
             Ok(ConsoleResult {
                 console: _,
                 command: ConsoleCommand::Exit,
             }) => Ok(self.result.insert(ConsoleCommand::Exit)),
             Ok(ConsoleResult { console, command }) => {
-                self.handle = Some(ECSHandle::new(Self::spawn_task(console, runtimer)));
+                self.handle.repeat(Self::spawn_task(console, runtimer));
 
                 Ok(self.result.insert(command))
             }
             Err(err) => {
                 let error = self
                     .error
-                    .get_or_insert(ConsoleResultError::DbHandleError(err));
+                    .get_or_insert(ConsoleResultError::ECSHandleError(err));
 
-                error!("console read task error:{:?}", error);
                 Err(error)
             }
+        }
+    }
+
+    pub fn try_result(&mut self) -> Result<&ConsoleCommand, &ECSHandleError<()>> {
+        match self.handle.try_result() {
+            Ok(ConsoleResult {
+                console: _,
+                command: ConsoleCommand::Exit,
+            }) => Ok(self.result.insert(ConsoleCommand::Exit)),
+            Ok(ConsoleResult {
+                console: _,
+                command,
+            }) => Ok(command),
+            Err(error) => Err(error),
         }
     }
 
@@ -194,8 +192,15 @@ impl ConsoleReadTask {
         self.error.as_ref()
     }
 
-    pub fn get_last_command(&self) -> Option<ConsoleCommand> {
-        self.result.clone()
+    pub fn get_last_command(&self) -> Option<&ConsoleCommand> {
+        self.result.as_ref()
+    }
+
+    pub fn is_finished_mut(&mut self) -> bool {
+        match self.try_result() {
+            Ok(_) => true,
+            Err(err) => err.is_finished(),
+        }
     }
 }
 
@@ -210,7 +215,7 @@ pub struct ConsoleResult {
 
 #[derive(Debug)]
 pub enum ConsoleResultError {
-    DbHandleError(ECSHandleError<()>),
+    ECSHandleError(ECSHandleError<()>),
     ConsoleEmpty,
     NotFinished,
 }
@@ -227,7 +232,8 @@ impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_message::<ConsoleTrims>()
             .add_systems(Startup, console_initalize)
-            .add_systems(PreUpdate, console_task);
+            .add_systems(PreUpdate, console_task_send_message)
+            .add_systems(Last, console_task_repeat);
     }
 }
 
@@ -235,12 +241,8 @@ fn console_initalize(mut commands: Commands, mut runtimer: ResMut<TokioTasksRunt
     commands.insert_resource(ConsoleReadTask::new(Console::default(), &mut runtimer));
 }
 
-fn console_task(
-    mut commands: Commands,
-    mut input: ResMut<ConsoleReadTask>,
-    mut runtimer: ResMut<TokioTasksRuntime>,
-) {
-    let Ok(result) = input.try_repeat(runtimer.as_mut()) else {
+fn console_task_send_message(mut commands: Commands, mut input: ResMut<ConsoleReadTask>) {
+    let Ok(result) = input.try_result() else {
         return;
     };
 
@@ -252,23 +254,37 @@ fn console_task(
             info!("custom input app exit command");
 
             commands.write_message(AppExit::Success);
-
-            let Some(input) = input.handle.take() else {
-                error!("lost Console");
-                return;
-            };
-
-            let mut result = match input.take_result() {
-                Ok(result) => result,
-                Err(err) => {
-                    error!("Console error:{:?}", err);
-                    return;
-                }
-            };
-
-            if let Err(err) = result.console.save_history(HISTROY) {
-                error!("Console save history error:{:?}", err);
-            };
         }
     }
+}
+
+fn console_task_repeat(
+    mut input: ResMut<ConsoleReadTask>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+) {
+    if !input.is_finished_mut() {
+        return;
+    };
+
+    if input
+        .try_result()
+        .is_ok_and(|result| matches!(result, ConsoleCommand::Exit))
+    {
+        let Ok(mut input) = input.handle.take_result() else {
+            error!("lost Console");
+            return;
+        };
+
+        if let Err(err) = input.console.save_history(HISTROY) {
+            error!("Console save history error:{:?}", err);
+        };
+
+        return;
+    }
+
+    if let Err(err) = input.try_repeat(runtimer.as_mut())
+        && !matches!(err, ConsoleResultError::NotFinished)
+    {
+        error!("Console repeat error:{:?}", err);
+    };
 }
