@@ -31,11 +31,11 @@ impl MigrationTrait for Migration {
         manager
             .create_table(CollectionMedia::create_table())
             .await?;
-        manager.create_table(MediaUp::create_table()).await?;
+        manager.create_table(MediaUpper::create_table()).await?;
         manager
             .create_table(AccountCollection::create_table())
             .await?;
-        manager.create_table(UpAccount::create_table()).await?;
+        manager.create_table(UpperAccount::create_table()).await?;
         manager
             .create_table(StatusDonwloadRule::create_table())
             .await?;
@@ -45,13 +45,13 @@ impl MigrationTrait for Migration {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // 先删除中间表
         manager
-            .drop_table(Table::drop().table(UpAccount::Table).to_owned())
+            .drop_table(Table::drop().table(UpperAccount::Table).to_owned())
             .await?;
         manager
             .drop_table(Table::drop().table(AccountCollection::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(MediaUp::Table).to_owned())
+            .drop_table(Table::drop().table(MediaUpper::Table).to_owned())
             .await?;
         manager
             .drop_table(Table::drop().table(CollectionMedia::Table).to_owned())

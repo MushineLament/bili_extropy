@@ -11,20 +11,20 @@ pub struct Entity;
 
 impl EntityName for Entity {
     fn table_name(&self) -> &str {
-        "up_account"
+        "upper_account"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct Model {
-    pub up_id: i64,
+    pub upper_id: i64,
     pub account_id: i64,
 }
 
 impl ToTableRecord<2> for Model {
     fn to_record(&self) -> [Cow<'_, str>; 2] {
         [
-            Cow::Owned(self.up_id.to_string()),
+            Cow::Owned(self.upper_id.to_string()),
             Cow::Owned(self.account_id.to_string()),
         ]
     }
@@ -33,7 +33,7 @@ impl ToTableRecord<2> for Model {
 impl ToTableRecord<2> for &Model {
     fn to_record(&self) -> [Cow<'_, str>; 2] {
         [
-            Cow::Owned(self.up_id.to_string()),
+            Cow::Owned(self.upper_id.to_string()),
             Cow::Owned(self.account_id.to_string()),
         ]
     }
@@ -41,13 +41,13 @@ impl ToTableRecord<2> for &Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
-    UpId,
+    UpperId,
     AccountId,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
-    UpId,
+    UpperId,
     AccountId,
 }
 
@@ -68,7 +68,7 @@ impl ColumnTrait for Column {
     type EntityName = Entity;
     fn def(&self) -> ColumnDef {
         match self {
-            Self::UpId => ColumnType::BigInteger.def(),
+            Self::UpperId => ColumnType::BigInteger.def(),
             Self::AccountId => ColumnType::BigInteger.def(),
         }
     }
@@ -81,9 +81,9 @@ impl RelationTrait for Relation {
                 .from(Column::AccountId)
                 .to(super::account::Column::AccountId)
                 .into(),
-            Self::Up => Entity::belongs_to(super::up::Entity)
-                .from(Column::UpId)
-                .to(super::up::Column::UpId)
+            Self::Up => Entity::belongs_to(super::upper::Entity)
+                .from(Column::UpperId)
+                .to(super::upper::Column::UpperId)
                 .into(),
         }
     }
@@ -95,7 +95,7 @@ impl Related<super::account::AccountEntity> for Entity {
     }
 }
 
-impl Related<super::up::Entity> for Entity {
+impl Related<super::upper::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Up.def()
     }

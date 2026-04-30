@@ -10,26 +10,26 @@ pub struct UpMediaEntity;
 
 impl EntityName for UpMediaEntity {
     fn table_name(&self) -> &str {
-        "media_up"
+        "media_upper"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct UpMediaModel {
     pub id: i64,
-    pub up_id: i64,
+    pub upper_id: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
     Id,
-    UpId,
+    UpperId,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
     Id,
-    UpId,
+    UpperId,
 }
 
 impl PrimaryKeyTrait for PrimaryKey {
@@ -50,7 +50,7 @@ impl ColumnTrait for Column {
     fn def(&self) -> ColumnDef {
         match self {
             Self::Id => ColumnType::BigInteger.def(),
-            Self::UpId => ColumnType::BigInteger.def(),
+            Self::UpperId => ColumnType::BigInteger.def(),
         }
     }
 }
@@ -62,9 +62,9 @@ impl RelationTrait for Relation {
                 .from(Column::Id)
                 .to(super::media::Column::Aid)
                 .into(),
-            Self::Up => UpMediaEntity::belongs_to(super::up::Entity)
-                .from(Column::UpId)
-                .to(super::up::Column::UpId)
+            Self::Up => UpMediaEntity::belongs_to(super::upper::Entity)
+                .from(Column::UpperId)
+                .to(super::upper::Column::UpperId)
                 .into(),
         }
     }
@@ -76,7 +76,7 @@ impl Related<super::media::MediaEntity> for UpMediaEntity {
     }
 }
 
-impl Related<super::up::Entity> for UpMediaEntity {
+impl Related<super::upper::Entity> for UpMediaEntity {
     fn to() -> RelationDef {
         Relation::Up.def()
     }

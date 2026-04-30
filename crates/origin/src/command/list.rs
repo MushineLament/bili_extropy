@@ -1,7 +1,5 @@
-use std::num::IntErrorKind;
-
 use bevy::{
-    app::{Plugin, PostStartup, Update},
+    app::{Plugin, Update},
     ecs::{
         entity::Entity,
         message::MessageReader,
@@ -14,10 +12,12 @@ use tracing::{error, info};
 
 use crate::{
     components::{
-        auth::handle::ActiveAccounts, download::DownloadHandle, initialize::DbInitailizeComponent as _, list::handle::{
+        auth::handle::ActiveAccounts,
+        download::DownloadHandle,
+        list::handle::{
             ListAccountCollectionsTask, ListAccountFollwedTask, ListAccountTask,
             ListCollectionMediasTask, ListCollectionTask, ListMediasTask, ListUppersTask,
-        }
+        },
     },
     console::ConsoleTrims,
     db::Db,
@@ -131,10 +131,10 @@ pub fn spawn_list_task(
 
         match args.get(LIST_COMMAND_INDEX).map(String::as_str) {
             Some("account") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
-                Some("following") => {
+                Some("followings") => {
                     commands.spawn(ListAccountFollwedTask::new(db.clone(), runtimer.as_mut()));
                 }
-                Some("collection") => {
+                Some("collections") => {
                     commands.spawn(ListAccountCollectionsTask::new(
                         db.clone(),
                         runtimer.as_mut(),

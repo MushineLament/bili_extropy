@@ -18,7 +18,7 @@ use crate::{
     db::Db,
     entity::{
         account::{self, AccountModel, QrData, QrPollData, QrPollResp, QrResp},
-        up::{QrPayload, QrPollPayload},
+        upper::{QrPayload, QrPollPayload},
     },
     payload::WbiPayload,
     state::AccountState,

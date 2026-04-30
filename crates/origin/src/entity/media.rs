@@ -3,7 +3,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::{
-    entity::{BvId, MediaAid, Title, UpperCid, up::Upper},
+    entity::{BvId, MediaAid, Title, UpperCid, upper::Upper},
     table::ToTableRecord,
 };
 
@@ -49,7 +49,7 @@ fn default_state() -> String {
 pub enum Relation {
     #[sea_orm(has_many = "crate::entity::collection_media::CollectionMediaEntity")]
     MediaSet,
-    #[sea_orm(has_many = "crate::entity::up_media::UpMediaEntity")]
+    #[sea_orm(has_many = "crate::entity::upper_media::UpMediaEntity")]
     MediaUp,
 }
 
@@ -59,7 +59,7 @@ impl Related<crate::entity::collection_media::CollectionMediaEntity> for Entity 
     }
 }
 
-impl Related<crate::entity::up_media::UpMediaEntity> for Entity {
+impl Related<crate::entity::upper_media::UpMediaEntity> for Entity {
     fn to() -> RelationDef {
         Relation::MediaUp.def()
     }
@@ -74,12 +74,12 @@ impl Related<crate::entity::collection::CollectionEntity> for Entity {
     }
 }
 
-impl Related<crate::entity::up::Entity> for Entity {
+impl Related<crate::entity::upper::Entity> for Entity {
     fn to() -> RelationDef {
-        crate::entity::up_media::Relation::Up.def()
+        crate::entity::upper_media::Relation::Up.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(crate::entity::up_media::Relation::Media.def().rev())
+        Some(crate::entity::upper_media::Relation::Media.def().rev())
     }
 }
 

@@ -14,7 +14,7 @@ use crate::{
         collection::{self, CollectionModel},
         collection_media,
         media::{self, MediaModel},
-        up, up_account,
+        upper, upper_account,
     },
 };
 
@@ -65,12 +65,12 @@ impl ListAccountCollectionsTask {
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListAccountFollwedTask(pub ECSHandleResult<Vec<up_account::Model>, anyhow::Error>);
+pub struct ListAccountFollwedTask(pub ECSHandleResult<Vec<upper_account::Model>, anyhow::Error>);
 
 impl ListAccountFollwedTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
-            let medias = up_account::Entity::find().all(&db.db).await?;
+            let medias = upper_account::Entity::find().all(&db.db).await?;
             Ok(medias)
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);
@@ -93,12 +93,12 @@ impl ListCollectionTask {
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListUppersTask(pub ECSHandleResult<Vec<up::UpperModel>, anyhow::Error>);
+pub struct ListUppersTask(pub ECSHandleResult<Vec<upper::UpperModel>, anyhow::Error>);
 
 impl ListUppersTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
-            let medias = up::UpperEntity::find().all(&db.db).await?;
+            let medias = upper::UpperEntity::find().all(&db.db).await?;
             Ok(medias)
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);

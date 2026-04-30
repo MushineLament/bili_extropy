@@ -3,23 +3,23 @@ use sea_orm_migration::{prelude::*, schema::*};
 use crate::m20250413_000001_create_table::{Media, Upper};
 
 #[derive(DeriveIden)]
-pub enum MediaUp {
+pub enum MediaUpper {
     Table,
     Id,
-    UpId,
+    UpperId,
 }
-impl MediaUp {
+impl MediaUpper {
     pub fn create_table() -> TableCreateStatement {
         Table::create()
-            .table(MediaUp::Table)
+            .table(MediaUpper::Table)
             .if_not_exists()
-            .col(big_unsigned(MediaUp::Id))
-            .col(big_unsigned(MediaUp::UpId))
-            .primary_key(Index::create().col(MediaUp::Id).col(MediaUp::UpId))
+            .col(big_unsigned(MediaUpper::Id))
+            .col(big_unsigned(MediaUpper::UpperId))
+            .primary_key(Index::create().col(MediaUpper::Id).col(MediaUpper::UpperId))
             .foreign_key(
                 ForeignKey::create()
                     .name("mediaup_media_fk")
-                    .from(MediaUp::Table, MediaUp::Id)
+                    .from(MediaUpper::Table, MediaUpper::Id)
                     .to(Media::Table, Media::Aid)
                     .on_delete(ForeignKeyAction::Cascade)
                     .on_update(ForeignKeyAction::Cascade),
@@ -27,7 +27,7 @@ impl MediaUp {
             .foreign_key(
                 ForeignKey::create()
                     .name("mediaup_up_fk")
-                    .from(MediaUp::Table, MediaUp::UpId)
+                    .from(MediaUpper::Table, MediaUpper::UpperId)
                     .to(Upper::Table, Upper::UpperId)
                     .on_delete(ForeignKeyAction::Cascade)
                     .on_update(ForeignKeyAction::Cascade),

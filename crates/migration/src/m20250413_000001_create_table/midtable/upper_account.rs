@@ -3,27 +3,27 @@ use sea_orm_migration::{prelude::*, schema::*};
 use crate::m20250413_000001_create_table::{Account, Upper};
 
 #[derive(DeriveIden)]
-pub enum UpAccount {
+pub enum UpperAccount {
     Table,
-    UpId,
+    UpperId,
     AccountId,
 }
-impl UpAccount {
+impl UpperAccount {
     pub fn create_table() -> TableCreateStatement {
         Table::create()
-            .table(UpAccount::Table)
+            .table(UpperAccount::Table)
             .if_not_exists()
-            .col(big_unsigned(UpAccount::UpId))
-            .col(big_unsigned(UpAccount::AccountId))
+            .col(big_unsigned(UpperAccount::UpperId))
+            .col(big_unsigned(UpperAccount::AccountId))
             .primary_key(
                 Index::create()
-                    .col(UpAccount::UpId)
-                    .col(UpAccount::AccountId),
+                    .col(UpperAccount::UpperId)
+                    .col(UpperAccount::AccountId),
             )
             .foreign_key(
                 ForeignKey::create()
                     .name("upaccount_up_fk")
-                    .from(UpAccount::Table, UpAccount::UpId)
+                    .from(UpperAccount::Table, UpperAccount::UpperId)
                     .to(Upper::Table, Upper::UpperId)
                     .on_delete(ForeignKeyAction::Cascade)
                     .on_update(ForeignKeyAction::Cascade),
@@ -31,7 +31,7 @@ impl UpAccount {
             .foreign_key(
                 ForeignKey::create()
                     .name("upaccount_account_fk")
-                    .from(UpAccount::Table, UpAccount::AccountId)
+                    .from(UpperAccount::Table, UpperAccount::AccountId)
                     .to(Account::Table, Account::AccountId)
                     .on_delete(ForeignKeyAction::Cascade)
                     .on_update(ForeignKeyAction::Cascade),

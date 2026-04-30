@@ -15,10 +15,10 @@ pub use Model as UpperModel;
 // ========== 实体模型 ==========
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-#[sea_orm(table_name = "up")]
+#[sea_orm(table_name = "upper")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
-    pub up_id: UpperCid,
+    pub upper_id: UpperCid,
     pub name: String,
     pub state: String,
 }
@@ -27,19 +27,19 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "crate::entity::up_media::UpMediaEntity")]
+    #[sea_orm(has_many = "crate::entity::upper_media::UpMediaEntity")]
     MediaUp,
-    #[sea_orm(has_many = "crate::entity::up_account::Entity")]
+    #[sea_orm(has_many = "crate::entity::upper_account::Entity")]
     UpAccount,
 }
 
-impl Related<crate::entity::up_media::UpMediaEntity> for Entity {
+impl Related<crate::entity::upper_media::UpMediaEntity> for Entity {
     fn to() -> RelationDef {
         Relation::MediaUp.def()
     }
 }
 
-impl Related<crate::entity::up_account::Entity> for Entity {
+impl Related<crate::entity::upper_account::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::UpAccount.def()
     }
@@ -47,19 +47,19 @@ impl Related<crate::entity::up_account::Entity> for Entity {
 
 impl Related<crate::entity::account::AccountEntity> for Entity {
     fn to() -> RelationDef {
-        crate::entity::up_account::Relation::Account.def()
+        crate::entity::upper_account::Relation::Account.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(crate::entity::up_account::Relation::Up.def().rev())
+        Some(crate::entity::upper_account::Relation::Up.def().rev())
     }
 }
 
 impl Related<crate::entity::media::MediaEntity> for Entity {
     fn to() -> RelationDef {
-        crate::entity::up_media::Relation::Media.def()
+        crate::entity::upper_media::Relation::Media.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(crate::entity::up_media::Relation::Up.def().rev())
+        Some(crate::entity::upper_media::Relation::Up.def().rev())
     }
 }
 
@@ -70,7 +70,7 @@ impl ActiveModelBehavior for ActiveModel {}
 impl ToTableRecord<3> for Model {
     fn to_record(&self) -> [Cow<'_, str>; 3] {
         [
-            Cow::Owned(self.up_id.to_string()),
+            Cow::Owned(self.upper_id.to_string()),
             Cow::Borrowed(&self.name),
             Cow::Owned(self.state.to_string()),
         ]

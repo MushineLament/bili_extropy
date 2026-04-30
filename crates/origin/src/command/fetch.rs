@@ -1,5 +1,3 @@
-use std::num::IntErrorKind;
-
 use anyhow::Context as _;
 use api_req::ApiCaller as _;
 use bevy::{
@@ -17,7 +15,6 @@ use bevy::{
 
 use bevy_tokio_tasks::TokioTasksRuntime;
 use futures::StreamExt;
-use itertools::Itertools;
 use migration::OnConflict;
 use sea_orm::{EntityTrait, IntoActiveModel};
 use tracing::{debug, error, info};
@@ -41,11 +38,11 @@ use crate::{
         },
         collection_media,
         media::{self, MediaInfoSingle},
-        up::{
+        upper::{
             self, FollowingNumData, FollowingNumResp, FollowingUpData, FollowingUpResp,
             PublishNumData, PublishNumResp,
         },
-        up_account, up_media,
+        upper_account, upper_media,
     },
     payload::{
         FollowingNumPayload, FollowingUpPayload, InSetPayload, InUpPayload,
@@ -63,7 +60,7 @@ Commands:
     account                     Fetch data related to a login account.
         followings                  Fetch account's followed list.
         collections                 Fetch account's collections list.
-        
+
     upper                       Fetch data related to an Upper.
         followings                  Fetch upper's followed list.
         collections                 Fetch upper's collection list.
@@ -604,17 +601,17 @@ impl FetchUpperFollowingData {
             }
         }
 
-        let state = up::UpperEntity::insert_many(ups.iter().map(|up| {
-            up::UpperModel {
-                up_id: up.mid,
+        let state = upper::UpperEntity::insert_many(ups.iter().map(|up| {
+            upper::UpperModel {
+                upper_id: up.mid,
                 name: up.name.to_owned(),
                 state: UpState::Inactive.to_string(),
             }
             .into_active_model()
         }))
         .on_conflict(
-            OnConflict::column(up::Column::UpId)
-                .update_columns([up::Column::UpId, up::Column::Name])
+            OnConflict::column(upper::Column::UpperId)
+                .update_columns([upper::Column::UpperId, upper::Column::Name])
                 .to_owned(),
         )
         .exec_without_returning(&db.db)
@@ -714,17 +711,23 @@ impl FetchAccountFollowingData {
             }
         }
 
-        let state = up_account::Entity::insert_many(ups.into_iter().map(|up| {
-            up_account::Model {
-                up_id: up.mid,
+        let state = upper_account::Entity::insert_many(ups.into_iter().map(|up| {
+            upper_account::Model {
+                upper_id: up.mid,
                 account_id,
             }
             .into_active_model()
         }))
         .on_conflict(
-            OnConflict::columns([up_account::Column::UpId, up_account::Column::AccountId])
-                .update_columns([up_account::Column::UpId, up_account::Column::AccountId])
-                .to_owned(),
+            OnConflict::columns([
+                upper_account::Column::UpperId,
+                upper_account::Column::AccountId,
+            ])
+            .update_columns([
+                upper_account::Column::UpperId,
+                upper_account::Column::AccountId,
+            ])
+            .to_owned(),
         )
         .exec_without_returning(&db.db)
         .await
@@ -1008,11 +1011,11 @@ impl FetchUpperMediasData {
             }
         }
 
-        let state = up_media::UpMediaEntity::insert_many(medias.into_iter().map(|m| {
+        let state = upper_media::UpMediaEntity::insert_many(medias.into_iter().map(|m| {
             // debug!("Linking media<{}> and up<{}>", m.title, up.name);
-            up_media::UpMediaModel {
+            upper_media::UpMediaModel {
                 id: m.id,
-                up_id: cid,
+                upper_id: cid,
             }
             .into_active_model()
         }))
