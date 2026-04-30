@@ -38,7 +38,7 @@ pub fn spawn_status_task(
     for message in console_message.read() {
         let db = db.clone();
 
-        let (args, argv) = argmap::parse(message.0.iter());
+        let ConsoleTrims { args, argv } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("status")) {
             continue;

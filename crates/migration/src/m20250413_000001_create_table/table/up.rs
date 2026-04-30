@@ -1,24 +1,24 @@
 use sea_orm_migration::{prelude::*, schema::*};
 
 #[derive(DeriveIden)]
-pub enum Up {
+pub enum Upper {
     Table,
-    UpId,
+    UpperId,
     Name,
     State,
 }
-impl Up {
+impl Upper {
     pub fn create_table() -> TableCreateStatement {
         Table::create()
-            .table(Up::Table)
+            .table(Upper::Table)
             .if_not_exists()
-            .col(big_unsigned_uniq(Up::UpId))
-            .col(string(Up::Name))
+            .col(big_unsigned_uniq(Upper::UpperId))
+            .col(string(Upper::Name))
             .col(
-                enumeration(Up::State, "state", ["Active", "Inactive", "Deactivated"])
+                enumeration(Upper::State, "state", ["Active", "Inactive", "Deactivated"])
                     .default("Inactive"),
             )
-            .primary_key(Index::create().col(Up::UpId))
+            .primary_key(Index::create().col(Upper::UpperId))
             .to_owned()
     }
 }

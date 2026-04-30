@@ -1,6 +1,6 @@
 use sea_orm_migration::{prelude::*, schema::*};
 
-use crate::m20250413_000001_create_table::{Account, Up};
+use crate::m20250413_000001_create_table::{Account, Upper};
 
 #[derive(DeriveIden)]
 pub enum UpAccount {
@@ -24,7 +24,7 @@ impl UpAccount {
                 ForeignKey::create()
                     .name("upaccount_up_fk")
                     .from(UpAccount::Table, UpAccount::UpId)
-                    .to(Up::Table, Up::UpId)
+                    .to(Upper::Table, Upper::UpperId)
                     .on_delete(ForeignKeyAction::Cascade)
                     .on_update(ForeignKeyAction::Cascade),
             )

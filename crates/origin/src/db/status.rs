@@ -1,7 +1,7 @@
 use crate::{
     db::Db,
     entity::status::{self, StatusEntity, StatusModel},
-    state::SetState,
+    state::CollectionState,
 };
 use anyhow::{Context, Ok, Result};
 use futures::TryFutureExt;
@@ -28,7 +28,7 @@ impl Db {
     /// 当存在多个目录时，会
     pub async fn get_active_status(&self) -> Result<Vec<StatusModel>> {
         status::StatusEntity::find()
-            .filter(status::Column::State.eq(SetState::Active))
+            .filter(status::Column::State.eq(CollectionState::Active))
             .all(&self.db)
             .map_err(|err| {
                 anyhow::anyhow!(
@@ -67,7 +67,7 @@ impl Db {
     pub async fn activate_status_by_id(&self, id: i64) -> Result<StatusModel> {
         let active_model = status::ActiveModel {
             id: sea_orm::ActiveValue::Unchanged(id), // 主键不变
-            state: sea_orm::ActiveValue::Set(SetState::Active.to_string()),
+            state: sea_orm::ActiveValue::Set(CollectionState::Active.to_string()),
             ..Default::default()
         };
 
@@ -80,7 +80,7 @@ impl Db {
     pub async fn deactivate_status_by_id(&self, id: i64) -> Result<()> {
         let active_model = status::ActiveModel {
             id: sea_orm::ActiveValue::Unchanged(id),
-            state: sea_orm::ActiveValue::Set(SetState::Inactive.to_string()),
+            state: sea_orm::ActiveValue::Set(CollectionState::Inactive.to_string()),
             ..Default::default()
         };
 

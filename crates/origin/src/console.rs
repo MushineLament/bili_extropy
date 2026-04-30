@@ -2,13 +2,14 @@ use std::borrow::Cow;
 
 use anyhow::Result;
 use bevy::{
-    app::{AppExit, Last, Plugin, PreUpdate, Startup},
+    app::{AppExit, Plugin, PreUpdate, Startup},
     ecs::{
         change_detection::MaybeLocation,
         message::Message,
         resource::Resource,
         system::{Commands, ResMut},
     },
+    platform::collections::HashMap,
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
@@ -129,9 +130,13 @@ impl ConsoleReadTask {
                         continue;
                     }
                     Ok(trims) => {
+                        let (args, argv) = argmap::parse(trims.into_iter());
                         return ConsoleResult {
                             console,
-                            command: ConsoleCommand::Trims(Cow::Owned(trims)),
+                            command: ConsoleCommand::Trims(ConsoleTrims {
+                                args: Cow::Owned(args),
+                                argv: Cow::Owned(HashMap::from_iter(argv)),
+                            }),
                         };
                     }
                     Err(err) => {
@@ -204,8 +209,11 @@ impl ConsoleReadTask {
     }
 }
 
-#[derive(Debug, Message, Deref, DerefMut, Clone)]
-pub struct ConsoleTrims(pub Cow<'static, Vec<String>>);
+#[derive(Debug, Message, Clone)]
+pub struct ConsoleTrims {
+    pub args: Cow<'static, Vec<String>>,
+    pub argv: Cow<'static, HashMap<String, Vec<String>>>,
+}
 
 #[derive(Debug)]
 pub struct ConsoleResult {
@@ -222,7 +230,7 @@ pub enum ConsoleResultError {
 
 #[derive(Debug, Clone)]
 pub enum ConsoleCommand {
-    Trims(Cow<'static, Vec<String>>),
+    Trims(ConsoleTrims),
     Exit,
 }
 
@@ -232,8 +240,7 @@ impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_message::<ConsoleTrims>()
             .add_systems(Startup, console_initalize)
-            .add_systems(PreUpdate, console_task_send_message)
-            .add_systems(Last, console_task_repeat);
+            .add_systems(PreUpdate, console_task_repeat);
     }
 }
 
@@ -241,50 +248,35 @@ fn console_initalize(mut commands: Commands, mut runtimer: ResMut<TokioTasksRunt
     commands.insert_resource(ConsoleReadTask::new(Console::default(), &mut runtimer));
 }
 
-fn console_task_send_message(mut commands: Commands, mut input: ResMut<ConsoleReadTask>) {
+fn console_task_repeat(
+    mut commands: Commands,
+    mut input: ResMut<ConsoleReadTask>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+) {
     let Ok(result) = input.try_result() else {
         return;
     };
 
     match result {
         ConsoleCommand::Trims(trims) => {
-            commands.write_message(ConsoleTrims(trims.clone()));
+            commands.write_message(trims.clone());
         }
         ConsoleCommand::Exit => {
             info!("custom input app exit command");
 
             commands.write_message(AppExit::Success);
+
+            let Ok(mut input) = input.handle.take_result() else {
+                error!("lost Console");
+                return;
+            };
+
+            if let Err(err) = input.console.save_history(HISTROY) {
+                error!("Console save history error:{:?}", err);
+            };
+            return;
         }
     }
-}
 
-fn console_task_repeat(
-    mut input: ResMut<ConsoleReadTask>,
-    mut runtimer: ResMut<TokioTasksRuntime>,
-) {
-    if !input.is_finished_mut() {
-        return;
-    };
-
-    if input
-        .try_result()
-        .is_ok_and(|result| matches!(result, ConsoleCommand::Exit))
-    {
-        let Ok(mut input) = input.handle.take_result() else {
-            error!("lost Console");
-            return;
-        };
-
-        if let Err(err) = input.console.save_history(HISTROY) {
-            error!("Console save history error:{:?}", err);
-        };
-
-        return;
-    }
-
-    if let Err(err) = input.try_repeat(runtimer.as_mut())
-        && !matches!(err, ConsoleResultError::NotFinished)
-    {
-        error!("Console repeat error:{:?}", err);
-    };
+    let _result = input.try_repeat(runtimer.as_mut());
 }

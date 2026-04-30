@@ -66,7 +66,7 @@ impl<O, T, E> ECSHandleInner<O, T, E> {
     pub fn is_finished(&self) -> bool {
         match self.data.as_ref() {
             Ok(_) => true,
-            Err(err) => err.is_finished(),
+            Err(err) => err.is_finished() || self.handle.is_finished(),
         }
     }
 

@@ -1,35 +1,296 @@
+use std::num::IntErrorKind;
+
+use anyhow::Context as _;
+use api_req::ApiCaller as _;
 use bevy::{
     app::{Plugin, Update},
-    ecs::message::MessageReader,
+    ecs::{
+        change_detection::MaybeLocation,
+        component::Component,
+        entity::Entity,
+        message::MessageReader,
+        schedule::IntoScheduleConfigs,
+        system::{Commands, Query, Res, ResMut},
+    },
+    prelude::{Deref, DerefMut},
 };
 
-use tracing::error;
+use bevy_tokio_tasks::TokioTasksRuntime;
+use futures::StreamExt;
+use itertools::Itertools;
+use migration::OnConflict;
+use sea_orm::{EntityTrait, IntoActiveModel};
+use tracing::{debug, error, info};
 
-use crate::console::ConsoleTrims;
+use crate::{
+    api::BiliApi,
+    components::{
+        auth::handle::ActiveAccounts,
+        download::{DownloadFileError, DownloadFileErrorKind, DownloadWay},
+        handle::ECSHandleResult,
+    },
+    console::ConsoleTrims,
+    db::Db,
+    entity::{
+        CollectionId, UpperCid,
+        account::AccountModel,
+        account_collection,
+        collection::{
+            self, InSetData, InSetResp, InUpData, InUpList, InUpResp, ListUpperCollectData,
+            ListUpperCollectResp,
+        },
+        collection_media,
+        media::{self, MediaInfoSingle},
+        up::{
+            self, FollowingNumData, FollowingNumResp, FollowingUpData, FollowingUpResp,
+            PublishNumData, PublishNumResp,
+        },
+        up_account, up_media,
+    },
+    payload::{
+        FollowingNumPayload, FollowingUpPayload, InSetPayload, InUpPayload,
+        ListUpperCollectPayload, PublishNumPayload,
+    },
+    state::{CollectionState, MediaState, UpState},
+};
+
+pub const HELP_FETCH: &str = r#"
+Back up your favorite bilibili online resources with RESP.
+
+Usage: fetch <COMMAND> <ID> [SUB_COMMAND] [OPTIONS]
+
+Commands:
+    account <account_id>        Fetch data related to a login account.
+        followings                  Fetch account's followed list.
+        collections                 Fetch account's collections list.
+
+    upper <upper_id>            Fetch data related to an Upper.
+        followings                  Fetch upper's followed list.
+        collections                 Fetch upper's collection list.
+        medias                      Fetch upper's media list.
+
+    collection <collection_id>  Fetch data related to a Collection.
+        medias                      Fetch collection's media list.
+    
+    media <cid/bvid>            Fetch data related to a single media.
+    
+    help                        Print this message or the help of the given subcommand(s)
+
+Options:
+    -v, --verbose  Show debug messages
+    -h, --help     Print help
+    -V, --version  Print version
+    
+Example:
+    fetch account [ID]
+    fetch upper [ID] followings
+"#;
+
+const FETCH_COMMAND_INDEX: usize = 2;
+const FETCH_ID_INDEX: usize = 3;
+const FETCH_SUBCOMMAND_INDEX: usize = 4;
 
 pub struct CommandFetchPlugin;
 
 impl Plugin for CommandFetchPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(Update, spawn_fetch_task);
+        app.add_systems(
+            Update,
+            (
+                spawn_fetch_task,
+                (
+                    fetch_account_following_data,
+                    fetch_account_collection_id_data,
+                    fetch_upper_following_data,
+                    fetch_upper_collection_data,
+                    fetch_upper_medias_data,
+                    fetch_collect_medias_data,
+                    fetch_media_data,
+                )
+                    .after(spawn_fetch_task),
+            ),
+        );
     }
 }
 
 pub fn spawn_fetch_task(
     mut console_message: MessageReader<ConsoleTrims>,
-    // db: Res<Db>,
-    // mut commands: Commands,
-    // mut runtimer: ResMut<TokioTasksRuntime>,
+    db: Res<Db>,
+    mut commands: Commands,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+    mut active_account: ResMut<ActiveAccounts>,
 ) {
     for message in console_message.read() {
         // let db = db.clone();
-        let (args, _argv) = argmap::parse(message.0.iter());
+        let ConsoleTrims { args, argv: _ } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("fetch")) {
             continue;
         }
 
-        match args.get(2).map(String::as_str) {
+        let id = args
+            .get(FETCH_ID_INDEX)
+            .ok_or(IntErrorKind::Empty)
+            .and_then(|str| str.parse::<i64>().map_err(|err| *err.kind()));
+
+        match args.get(FETCH_COMMAND_INDEX).map(String::as_str) {
+            // 上述有问题
+            Some("account") => {
+                let Ok(accounts) = active_account.try_result() else {
+                    error!("not any active account");
+                    continue;
+                };
+
+                let id = match id {
+                    Ok(id) => id,
+                    Err(err) => {
+                        error!("not a account id,error: {:?}", err);
+                        continue;
+                    }
+                };
+
+                let Some(account) = accounts.iter().find(|model| model.account_id == id) else {
+                    error!("not this active account id");
+                    continue;
+                };
+
+                match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                    Some("followings") => {
+                        commands.spawn(FetchAccountFollowingData::new(
+                            db.clone(),
+                            account.clone(),
+                            runtimer.as_mut(),
+                        ));
+                    }
+                    Some("collections") => {
+                        commands.spawn(FetchAccountCollectionIdData::new(
+                            db.clone(),
+                            account.clone(),
+                            runtimer.as_mut(),
+                        ));
+                    }
+                    Some(unkown) => {
+                        error!("not has this command: {:?}", unkown);
+                    }
+                    None => {}
+                }
+            }
+            Some("upper") => {
+                let account = active_account.try_result();
+
+                let id = match id {
+                    Ok(id) => id,
+                    Err(err) => {
+                        error!("not a upper id,error: {:?}", err);
+                        continue;
+                    }
+                };
+
+                let cookies = account
+                    .ok()
+                    .iter()
+                    .map(|accounts| accounts.iter())
+                    .flatten()
+                    .find_or_first(|model| model.account_id == id)
+                    .map(|model| model.cookies.clone());
+
+                match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                    Some("followings") => {
+                        info!("Fetching upper following with id<{}>", id);
+
+                        commands.spawn(FetchUpperFollowingData::new(
+                            db.clone(),
+                            id,
+                            runtimer.as_mut(),
+                            cookies,
+                        ));
+                    }
+                    Some("collections") => {
+                        commands.spawn(FetchUpperCollectionData::new(
+                            db.clone(),
+                            runtimer.as_mut(),
+                            id,
+                            cookies,
+                        ));
+                    }
+
+                    Some("medias") => {
+                        commands.spawn(FetchUpperMediasData::new(
+                            db.clone(),
+                            id,
+                            runtimer.as_mut(),
+                        ));
+                    }
+
+                    Some(unkown) => {
+                        error!("not has this command: {:?}", unkown);
+                    }
+                    None => {}
+                }
+            }
+            Some("collection") => {
+                let id = match id {
+                    Ok(id) => id,
+                    Err(err) => {
+                        error!("not a collection id,error: {:?}", err);
+                        continue;
+                    }
+                };
+
+                match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                    Some("medias") => {
+                        let account = active_account.try_result();
+
+                        let _cookies = account
+                            .ok()
+                            .iter()
+                            .map(|accounts| accounts.iter())
+                            .flatten()
+                            // .find_or_first(|model| model.account_id == id)
+                            .next()
+                            .map(|model| {
+                                info!(
+                                    "Fetching collection id<{:?}> with account<{:?}>",
+                                    id, model.account_id
+                                );
+                                model.cookies.clone()
+                            });
+
+                        commands.spawn(FetchCollectMediasData::new(
+                            db.clone(),
+                            id,
+                            runtimer.as_mut(),
+                        ));
+                    }
+                    Some(unkown) => {
+                        error!("not has this command: {:?}", unkown);
+                    }
+                    None => {}
+                }
+            }
+
+            Some("media") => {
+                let Some(bvid) = args.get(FETCH_ID_INDEX).map(|id| DownloadWay(id.clone())) else {
+                    error!("plase input a aid or bvid");
+                    continue;
+                };
+
+                match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                    // Some("collectionid") => {
+                    //     commands.spawn(FetchCollectMediasData::new(
+                    //         db.clone(),
+                    //         id,
+                    //         runtimer.as_mut(),
+                    //     ));
+                    // }
+                    Some(unkown) => {
+                        error!("not has this command: {:?}", unkown);
+                    }
+                    None => {
+                        commands.spawn(FetchMediaData::new(db.clone(), bvid, runtimer.as_mut()));
+                    }
+                }
+            }
             Some(unkown) => {
                 error!("not has this command: {:?}", unkown);
             }
@@ -40,334 +301,698 @@ pub fn spawn_fetch_task(
     }
 }
 
-// pub async fn fetch(prune: bool) -> Result<()> {
-//     let db = db(false).await;
-//     let accounts = db
-//         .get_accounts_filtered(account::Column::State.eq(AccountState::Active))
-//         .await?;
-//     for account in accounts.iter() {
-//         add_cookie_jar(parse_cookies(&account.cookies));
+pub fn fetch_upper_collection_data(
+    mut commands: Commands,
+    query: Query<(&mut FetchUpperCollectionData, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
 
-//         let account_id = account.account_id;
+        commands.entity(entity).try_despawn();
 
-//         info!("Fetching sets with account<{}>", account.name);
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
 
-//         let ListSetResp {
-//             data: ListSetData { list },
-//         } = BiliApi::request(ListSetPayload { up_mid: account_id }).await?;
+/// 更新数据库中的uppercid用户下的所有收藏夹信息
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchUpperCollectionData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-//         if !list.is_empty() {
-//             db.upsert_collections(list.iter().map(|set| {
-//                 debug!("Updating set<{}>", set.title);
-//                 collection::CollectionModel {
-//                     collection_id: set.id,
-//                     name: set.title.to_owned(),
-//                     count: set.media_count,
-//                     state: SetState::Inactive.to_string(), // conflic skip
-//                 }
-//             }))
-//             .await?;
-//             db.upsert_set_accounts(list.iter().map(|set| {
-//                 debug!("Linking account<{}> and set<{}>", account.name, set.title,);
-//                 account_collection::AccountCollectionModel {
-//                     collection_id: set.id,
-//                     account_id,
-//                 }
-//             }))
-//             .await?;
-//         }
+impl FetchUpperCollectionData {
+    pub fn new(
+        db: Db,
+        runtimer: &mut TokioTasksRuntime,
+        cid: UpperCid,
+        cookies: Option<String>,
+    ) -> Self {
+        let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, cid, cookies));
 
-//         let mut old_set_ids: HashSet<i64> =
-//             HashSet::from_iter(db.get_set_ids_of_account(account_id).await?);
+        Self(ECSHandleResult::new(task))
+    }
 
-//         for set in list {
-//             old_set_ids.remove(&set.id);
-//         }
+    pub async fn task(
+        db: Db,
+        cid: UpperCid,
+        cookies: Option<String>,
+    ) -> Result<(UpperCid, u64), anyhow::Error> {
+        debug!("cookies:{:?}", cookies);
+        if let Some(cookies) = cookies {
+            crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&cookies));
+        }
 
-//         for set_id in old_set_ids {
-//             db.delete_set_account(account_collection::AccountCollectionModel {
-//                 collection_id: set_id,
-//                 account_id,
-//             })
-//             .await?;
-//             warn!("Unlinked account<{}> and set<{}>", account.name, set_id,);
-//         }
+        let Ok(ListUpperCollectResp {
+            data: ListUpperCollectData { list },
+        }) = BiliApi::request(ListUpperCollectPayload { up_mid: cid }).await
+        else {
+            return Err(anyhow::anyhow!(
+                "bilibili api request error,caller: {:?}",
+                MaybeLocation::caller()
+            ));
+        };
 
-//         info!("Fetching following ups with account<{}>", account.name);
-//         let FollowingNumResp {
-//             data: FollowingNumData { following },
-//         } = BiliApi::request(FollowingNumPayload { vmid: account_id })
-//             .await
-//             .context("Failed to fetch following ups number")?;
-//         if following == 0 {
-//             continue;
-//         }
+        let state = collection::CollectionEntity::insert_many(list.into_iter().map(|info| {
+            collection::CollectionModel {
+                collection_id: info.id,
+                name: info.title.to_owned(),
+                count: info.media_count,
+                state: CollectionState::Inactive.to_string(), // conflic skip
+            }
+            .into_active_model()
+        }))
+        .on_conflict(
+            OnConflict::column(collection::Column::CollectionId)
+                .update_columns([collection::Column::Name, collection::Column::Count])
+                .to_owned(),
+        )
+        .exec_without_returning(&db.db)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "insert many collection error: {:?}, account_id<{:?}>, caller:{:?}",
+                err,
+                cid,
+                MaybeLocation::caller()
+            )
+        });
 
-//         let page = (following - 1) / 50 + 1;
+        state.map(|state| (cid, state))
+    }
+}
 
-//         let mut tasks = futures::stream::iter(1..=page)
-//             .map(|pn| async move {
-//                 let FollowingUpResp {
-//                     data: FollowingUpData { list },
-//                 } = BiliApi::request(FollowingUpPayload {
-//                     vmid: account_id,
-//                     pn,
-//                     ps: 50,
-//                 })
-//                 .await
-//                 .context(format!("Failed to fetch following ups' page {pn}"))?;
-//                 Ok::<_, anyhow::Error>(list)
-//             })
-//             .buffer_unordered(8);
-//         let mut ups = vec![];
-//         while let Some(res) = tasks.next().await {
-//             match res {
-//                 Ok(list) => ups.extend(list),
-//                 Err(e) => error!("{}", e),
-//             }
-//         }
-//         let mut old_following_ids: HashSet<i64> =
-//             HashSet::from_iter(db.get_up_ids_of_account(account_id).await?);
-//         if !ups.is_empty() {
-//             db.upsert_ups(ups.iter().map(|up| {
-//                 debug!("Updating following up<{}>", up.name);
-//                 up::Model {
-//                     up_id: up.mid,
-//                     name: up.name.to_owned(),
-//                     state: UpState::Inactive.to_string(),
-//                 }
-//             }))
-//             .await?;
-//             db.upsert_up_accounts(ups.iter().map(|up| {
-//                 debug!("Linking account<{}> and up<{}>", account.name, up.name);
-//                 up_account::Model {
-//                     up_id: up.mid,
-//                     account_id,
-//                 }
-//             }))
-//             .await?;
-//             for up in ups {
-//                 old_following_ids.remove(&up.mid);
-//             }
-//             for up_id in old_following_ids {
-//                 db.delete_up_account(up_account::Model { up_id, account_id })
-//                     .await?;
-//                 warn!("Unlinked account<{}> and up<{}>", account.name, up_id,);
-//             }
-//         }
-//     }
-//     let fetched_sets = DashSet::<i64>::new();
-//     for account in accounts.iter() {
-//         info!("Fetching set medias with account<{}>", account.name);
-//         add_cookie_jar(parse_cookies(&account.cookies));
-//         let account_id = account.account_id;
-//         let set_ids_of_account = db.get_set_ids_of_account(account_id).await?;
-//         for set_id in set_ids_of_account {
-//             if fetched_sets.contains(&set_id) {
-//                 continue;
-//             }
-//             let set = db.get_set(set_id).await?;
-//             if set.state != SetState::Active.to_string() || set.count == 0 {
-//                 continue;
-//             }
-//             info!("Fetching medias in set<{}>", set.name);
-//             let page = (set.count - 1) / 20 + 1;
-//             let mut tasks = futures::stream::iter(1..=page)
-//                 .map(|pn| async move {
-//                     // 通过收藏夹id，获取视频的id
-//                     let InSetResp {
-//                         data: InSetData { medias },
-//                     } = BiliApi::request(InSetPayload {
-//                         media_id: set.collection_id,
-//                         pn,
-//                         ps: 20,
-//                     })
-//                     .await
-//                     // .context(format!("Failed to fetch sets' page {pn}"))
-//                     ?;
-//                     Ok::<_, anyhow::Error>(medias)
-//                 })
-//                 .buffer_unordered(8);
-//             let mut medias = vec![];
-//             while let Some(res) = tasks.next().await {
-//                 match res {
-//                     Ok(list) => medias.extend(list),
-//                     Err(e) => error!("caller: {:?},{}", (file!(), line!()), e),
-//                 }
-//             }
-//             if !medias.is_empty() {
-//                 db.upsert_medias(medias.iter().map(|m| {
-//                     debug!("Updating media<{}>", m.title);
-//                     media::MediaModel {
-//                         aid: m.id,
-//                         bv_id: m.bv_id.to_owned(),
-//                         title: m.title.to_owned(),
-//                         r#type: m.r#type.to_string(),
-//                         state: MediaState::Pending.to_string(),
-//                         cid: m.upper.mid,
-//                     }
-//                 }))
-//                 .await?;
-//                 db.upsert_media_sets(medias.into_iter().map(|m| {
-//                     debug!("Linking media<{}> and set<{}>", m.title, set.name);
-//                     collection_media::CollectionMediaModel {
-//                         id: m.id,
-//                         collection_id: set_id,
-//                     }
-//                 }))
-//                 .await?;
-//             }
-//             fetched_sets.insert(set_id);
-//         }
-//     }
-//     let fetched_ups = DashSet::<i64>::new();
-//     for account in accounts.iter() {
-//         info!(
-//             "Fetching published contents of ups with account<{}>",
-//             account.name
-//         );
-//         add_cookie_jar(parse_cookies(&account.cookies));
-//         let account_id = account.account_id;
-//         let up_ids_of_account = db.get_up_ids_of_account(account_id).await?;
-//         for up_id in up_ids_of_account {
-//             if fetched_ups.contains(&up_id) {
-//                 continue;
-//             }
-//             let up = db.get_up(up_id).await?;
-//             if up.state != SetState::Active.to_string() {
-//                 continue;
-//             }
-//             let PublishNumResp {
-//                 data: PublishNumData { video },
-//             } = BiliApi::request(PublishNumPayload { mid: up_id }).await?;
-//             if video == 0 {
-//                 continue;
-//             }
-//             info!("Fetching published videos of up<{}>", up.name);
-//             let page = (video - 1) / 30 + 1;
-//             let mut tasks = futures::stream::iter(1..=page)
-//                 .map(|pn| async move {
-//                     let InUpResp {
-//                         data:
-//                             InUpData {
-//                                 list: InUpList { vlist },
-//                             },
-//                     } = BiliApi::request(InUpPayload::new(up_id, pn, 30).await?)
-//                         .await
-//                         .map_err(|err| {
-//                             anyhow::anyhow!("Failed to fetch up space page {pn}, error: {:?}", err)
-//                         })?;
-//                     Ok::<_, anyhow::Error>(vlist)
-//                 })
-//                 .buffer_unordered(8);
-//             let mut medias = vec![];
-//             while let Some(res) = tasks.next().await {
-//                 match res {
-//                     Ok(list) => medias.extend(list),
-//                     Err(e) => error!("{}", e),
-//                 }
-//             }
-//             if !medias.is_empty() {
-//                 db.upsert_medias(medias.iter().map(|m| {
-//                     debug!("Updating media<{}>", m.title);
-//                     media::MediaModel {
-//                         aid: m.id,
-//                         bv_id: m.bv_id.to_owned(),
-//                         title: m.title.to_owned(),
-//                         r#type: m.r#type.to_string(),
-//                         state: MediaState::Pending.to_string(),
-//                         cid: m.mid,
-//                     }
-//                 }))
-//                 .await?;
-//                 db.upsert_media_ups(medias.into_iter().map(|m| {
-//                     debug!("Linking media<{}> and up<{}>", m.title, up.name);
-//                     up_media::UpMediaModel { id: m.id, up_id }
-//                 }))
-//                 .await?;
-//             }
-//             fetched_ups.insert(up_id);
-//         }
-//     }
-//     let fetched_medias = Arc::new(DashSet::<i64>::new());
-//     for account in accounts.iter() {
-//         info!("Fetching media metadatas with account<{}>", account.name);
-//         add_cookie_jar(parse_cookies(&account.cookies));
-//         let medias = db.all_active_medias().await?;
-//         let mut tasks = futures::stream::iter(
-//             medias
-//                 .into_iter()
-//                 .filter(|media| !fetched_medias.contains(&media.aid)),
-//         )
-//         .map(|media| async move {
-//             match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
-//                 MediaInfoResp {
-//                     data: Some(MediaInfoData { owner, staff, .. }),
-//                     code: 0,
-//                     ..
-//                 } => Ok((owner, staff, media)),
-//                 MediaInfoResp {
-//                     message: option_msg,
-//                     ..
-//                 } => Err(anyhow!(
-//                     "Info unreachable media<{} {}>: {}",
-//                     media.title,
-//                     media.aid,
-//                     option_msg.unwrap_or_default()
-//                 )),
-//             }
-//         })
-//         .buffer_unordered(128);
-//         let mut media_ups = vec![];
-//         let mut ups = HashMap::new();
-//         while let Some(res) = tasks.next().await {
-//             match res {
-//                 Ok((owner, staff, media)) => {
-//                     ups.insert(owner.mid, owner.clone());
-//                     media_ups.push((media.clone(), owner));
-//                     if let Some(staff) = staff {
-//                         staff.into_iter().for_each(|staff| {
-//                             ups.insert(staff.mid, staff.clone());
-//                             media_ups.push((media.clone(), staff));
-//                         });
-//                     }
-//                 }
-//                 Err(e) => error!("{}", e),
-//             }
-//         }
-//         if !ups.is_empty() {
-//             db.upsert_ups(ups.into_values().map(|up| {
-//                 debug!("Updating up<{}>", up.name);
-//                 up::Model {
-//                     up_id: up.mid,
-//                     name: up.name,
-//                     state: UpState::Inactive.to_string(),
-//                 }
-//             }))
-//             .await?;
-//         }
-//         if !media_ups.is_empty() {
-//             db.upsert_media_ups(media_ups.iter().map(|(media, up)| {
-//                 debug!("Linking media<{}> and up<{}>", media.title, up.name);
-//                 up_media::UpMediaModel {
-//                     id: media.aid,
-//                     up_id: up.mid,
-//                 }
-//             }))
-//             .await?;
-//         }
-//         for (media, _) in media_ups.into_iter() {
-//             fetched_medias.insert(media.aid);
-//         }
-//     }
-//     if prune {
-//         info!("Pruning unfaved sets");
-//         db.prune_sets().await?;
-//         info!("Pruning unfollowed ups");
-//         db.prune_ups().await?;
-//         info!("Pruning unfollowed medias");
-//         db.prune_medias().await?;
-//     }
-//     info!("Finished fetching");
-//     Ok(())
-// }
+pub fn fetch_account_collection_id_data(
+    mut commands: Commands,
+    query: Query<(&mut FetchAccountCollectionIdData, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+/// 更新数据库中的登录账户与收藏夹id的对应关系
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchAccountCollectionIdData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+
+impl FetchAccountCollectionIdData {
+    #[track_caller]
+    pub fn new(db: Db, model: AccountModel, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task: tokio::task::JoinHandle<Result<(i64, u64), anyhow::Error>> =
+            runtimer.spawn_background_task(|_ctx| Self::task(db, model, MaybeLocation::caller()));
+
+        Self(ECSHandleResult::new(task))
+    }
+
+    pub async fn task(
+        db: Db,
+        model: AccountModel,
+        caller: MaybeLocation,
+    ) -> Result<(UpperCid, u64), anyhow::Error> {
+        crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&model.cookies));
+
+        let account_id = model.account_id;
+
+        info!("Fetching sets with account<{}>", model.name);
+
+        let ListUpperCollectResp {
+            data: ListUpperCollectData { list },
+        } = BiliApi::request(ListUpperCollectPayload { up_mid: account_id }).await?;
+
+        let state = account_collection::AccountCollectionEntity::insert_many(list.into_iter().map(
+            |info| {
+                account_collection::AccountCollectionModel {
+                    collection_id: info.id,
+                    account_id,
+                }
+                .into_active_model()
+            },
+        ))
+        .on_conflict(
+            OnConflict::columns([
+                account_collection::Column::CollectionId,
+                account_collection::Column::AccountId,
+            ])
+            .update_columns([
+                account_collection::Column::CollectionId,
+                account_collection::Column::AccountId,
+            ])
+            .to_owned(),
+        )
+        .exec_without_returning(&db.db)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "insert many accountcollectid error: {:?}, account_id<{:?}>, caller:{:?}",
+                err,
+                account_id,
+                caller
+            )
+        });
+
+        state.map(|state| (account_id, state))
+    }
+}
+
+pub fn fetch_upper_following_data(
+    mut commands: Commands,
+    query: Query<(&mut FetchUpperFollowingData, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+/// 获取uppercid用户关注的up列表
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchUpperFollowingData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+
+impl FetchUpperFollowingData {
+    #[track_caller]
+    pub fn new(
+        db: Db,
+        cid: UpperCid,
+        runtimer: &mut TokioTasksRuntime,
+        cookies: Option<String>,
+    ) -> Self {
+        let task = runtimer.spawn_background_task(move |_ctx| {
+            Self::task(db, cid, cookies, MaybeLocation::caller())
+        });
+
+        Self(ECSHandleResult::new(task))
+    }
+
+    pub async fn task(
+        db: Db,
+        cid: UpperCid,
+        cookies: Option<String>,
+        caller: MaybeLocation,
+    ) -> Result<(UpperCid, u64), anyhow::Error> {
+        if let Some(cookies) = cookies {
+            crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&cookies));
+        }
+
+        info!("Fetching following with upper<{}>", cid);
+
+        let FollowingNumResp {
+            data: FollowingNumData { following },
+        } = BiliApi::request(FollowingNumPayload { vmid: cid })
+            .await
+            .context("Failed to fetch following ups number")?;
+
+        if following == 0 {
+            return Ok((cid, 0));
+        }
+
+        let page = (following - 1) / 50 + 1;
+
+        let mut tasks = futures::stream::iter(1..=page)
+            .map(|pn| async move {
+                let FollowingUpResp {
+                    data: FollowingUpData { list },
+                } = BiliApi::request(FollowingUpPayload {
+                    vmid: cid,
+                    pn,
+                    ps: 50,
+                })
+                .await
+                .context(format!("Failed to fetch following ups' page {pn}"))?;
+                Ok::<_, anyhow::Error>(list)
+            })
+            .buffer_unordered(8);
+
+        let mut ups = vec![];
+        while let Some(res) = tasks.next().await {
+            match res {
+                Ok(list) => ups.extend(list),
+                Err(e) => error!("{}", e),
+            }
+        }
+
+        let state = up::UpperEntity::insert_many(ups.iter().map(|up| {
+            up::UpperModel {
+                up_id: up.mid,
+                name: up.name.to_owned(),
+                state: UpState::Inactive.to_string(),
+            }
+            .into_active_model()
+        }))
+        .on_conflict(
+            OnConflict::column(up::Column::UpId)
+                .update_columns([up::Column::UpId, up::Column::Name])
+                .to_owned(),
+        )
+        .exec_without_returning(&db.db)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "insert many accountcollectid error: {:?}, account_id<{:?}>, caller:{:?}",
+                err,
+                cid,
+                caller
+            )
+        });
+
+        state.map(|state| (cid, state))
+    }
+}
+
+pub fn fetch_account_following_data(
+    mut commands: Commands,
+    query: Query<(&mut FetchAccountFollowingData, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+/// 获取登录账户与关注uppercid的关系
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchAccountFollowingData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+
+impl FetchAccountFollowingData {
+    #[track_caller]
+    pub fn new(db: Db, model: AccountModel, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = runtimer.spawn_background_task(|_ctx| Self::task(db, model));
+
+        Self(ECSHandleResult::new(task))
+    }
+    pub async fn task(db: Db, model: AccountModel) -> Result<(UpperCid, u64), anyhow::Error> {
+        crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&model.cookies));
+
+        let account_id = model.account_id;
+
+        info!("Fetching sets with account<{}>", model.name);
+
+        let FollowingNumResp {
+            data: FollowingNumData { following },
+        } = BiliApi::request(FollowingNumPayload { vmid: account_id })
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!("Failed to fetch following ups number, error:{:?}", err)
+            })?;
+
+        if following == 0 {
+            return Ok((account_id, 0));
+        }
+
+        let page = (following - 1) / 50 + 1;
+
+        let mut tasks = futures::stream::iter(1..=page)
+            .map(|pn| async move {
+                let FollowingUpResp {
+                    data: FollowingUpData { list },
+                } = BiliApi::request(FollowingUpPayload {
+                    vmid: account_id,
+                    pn,
+                    ps: 50,
+                })
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("Failed to fetch following ups' page {pn},api:{:?}", err)
+                })?;
+                Ok::<_, anyhow::Error>(list)
+            })
+            .buffer_unordered(8);
+
+        let mut ups = vec![];
+        while let Some(res) = tasks.next().await {
+            match res {
+                Ok(list) => ups.extend(list),
+                Err(e) => error!("{}", e),
+            }
+        }
+
+        let state = up_account::Entity::insert_many(ups.into_iter().map(|up| {
+            up_account::Model {
+                up_id: up.mid,
+                account_id,
+            }
+            .into_active_model()
+        }))
+        .on_conflict(
+            OnConflict::columns([up_account::Column::UpId, up_account::Column::AccountId])
+                .update_columns([up_account::Column::UpId, up_account::Column::AccountId])
+                .to_owned(),
+        )
+        .exec_without_returning(&db.db)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "insert many accountcollectid error: {:?}, account_id<{:?}>, caller:{:?}",
+                err,
+                account_id,
+                MaybeLocation::caller()
+            )
+        });
+
+        state.map(|state| (account_id, state))
+    }
+}
+
+pub fn fetch_collect_medias_data(
+    mut commands: Commands,
+    query: Query<(&mut FetchCollectMediasData, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+/// 获取收藏夹id下的所有mediacid
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchCollectMediasData(pub ECSHandleResult<(CollectionId, u64), anyhow::Error>);
+
+impl FetchCollectMediasData {
+    #[track_caller]
+    pub fn new(db: Db, id: CollectionId, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task =
+            runtimer.spawn_background_task(move |_ctx| Self::task(db, id, MaybeLocation::caller()));
+
+        Self(ECSHandleResult::new(task))
+    }
+
+    pub async fn task(
+        db: Db,
+        id: CollectionId,
+        caller: MaybeLocation,
+    ) -> Result<(CollectionId, u64), anyhow::Error> {
+        let Some(model) = collection::CollectionEntity::find_by_id(id)
+            .one(&db.db)
+            .await?
+        else {
+            return Err(anyhow::anyhow!(
+                "sql not has collection<{:?}> infomation",
+                id
+            ));
+        };
+
+        let page = (model.count - 1) / 20 + 1;
+
+        let mut tasks = futures::stream::iter(1..=page)
+            .map(|pn| async move {
+                // 通过收藏夹id，获取视频的id
+                let InSetResp {
+                    data: InSetData { medias },
+                } = BiliApi::request(InSetPayload {
+                    media_id: model.collection_id,
+                    pn,
+                    ps: 20,
+                })
+                .await
+                .context(format!("Failed to fetch sets' page {pn}"))?;
+                Ok::<_, anyhow::Error>(medias)
+            })
+            .buffer_unordered(8);
+
+        let mut medias = vec![];
+        while let Some(res) = tasks.next().await {
+            match res {
+                Ok(list) => medias.extend(list),
+                Err(e) => error!("caller: {:?},{}", (file!(), line!()), e),
+            }
+        }
+
+        let state =
+            collection_media::CollectionMediaEntity::insert_many(medias.into_iter().map(|m| {
+                debug!("Linking media<{}> and set<{}>", m.title, model.name);
+                collection_media::CollectionMediaModel {
+                    media_cid: m.id,
+                    collection_id: model.collection_id,
+                }
+                .into_active_model()
+            }))
+            .exec_without_returning(&db.db)
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "insert many accountcollectid error: {:?}, collectonid<{:?}>, caller:{:?}",
+                    err,
+                    model.collection_id,
+                    caller
+                )
+            });
+
+        state.map(|state| (model.collection_id, state))
+    }
+}
+
+pub fn fetch_media_data(mut commands: Commands, query: Query<(&mut FetchMediaData, Entity)>) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!("fetch media<{}> is finished,state:{}", cid.0, state);
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+/// 获取收藏夹id下的所有mediacid
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchMediaData(pub ECSHandleResult<(DownloadWay, u64), anyhow::Error>);
+
+impl FetchMediaData {
+    #[track_caller]
+    pub fn new(db: Db, id: DownloadWay, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task =
+            runtimer.spawn_background_task(move |_ctx| Self::task(db, id, MaybeLocation::caller()));
+
+        Self(ECSHandleResult::new(task))
+    }
+
+    pub async fn task(
+        db: Db,
+        id: DownloadWay,
+        caller: MaybeLocation,
+    ) -> Result<(DownloadWay, u64), anyhow::Error> {
+        let Ok(MediaInfoSingle {
+            code: _,
+            data: Some(media),
+            message: _,
+        }) = id
+            .clone()
+            .response()
+            .await
+            .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)))
+        else {
+            return Err(anyhow::anyhow!(
+                "fetch single media error,id<{:?}>,caller{:?}",
+                id.0,
+                caller
+            ));
+        };
+
+        let state = media::MediaEntity::insert(
+            crate::entity::media::MediaModel {
+                aid: media.aid,
+                bv_id: media.bvid.to_owned(),
+                title: media.title.to_owned(),
+                r#type: media.r#type.to_string(),
+                state: MediaState::Pending.to_string(),
+                cid: media.cid,
+                pic: None,
+            }
+            .into_active_model(),
+        )
+        .on_conflict(
+            OnConflict::column(media::Column::Aid)
+                .update_columns([
+                    media::Column::BvId,
+                    media::Column::Cid,
+                    media::Column::Title,
+                    media::Column::Type,
+                ])
+                .to_owned(),
+        )
+        .exec_without_returning(&db.db)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "can't not upsert media<{:?}> in to table, error:{:?}",
+                id,
+                err
+            )
+        });
+
+        state.map(|state| (id, state))
+    }
+}
+
+pub fn fetch_upper_medias_data(
+    mut commands: Commands,
+    query: Query<(&mut FetchUpperMediasData, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!("fetch upper<{}>'s medias is finished,state:{}", cid, state);
+            }
+            Err(err) => {
+                error!("fetch upper medias error:{:?}", err);
+            }
+        }
+    }
+}
+
+/// 获取upperid下的所有mediacid
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchUpperMediasData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+
+impl FetchUpperMediasData {
+    #[track_caller]
+    pub fn new(db: Db, id: UpperCid, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task =
+            runtimer.spawn_background_task(move |_ctx| Self::task(db, id, MaybeLocation::caller()));
+
+        Self(ECSHandleResult::new(task))
+    }
+
+    pub async fn task(
+        db: Db,
+        cid: UpperCid,
+        caller: MaybeLocation,
+    ) -> Result<(UpperCid, u64), anyhow::Error> {
+        let PublishNumResp {
+            data: PublishNumData { video },
+        } = BiliApi::request(PublishNumPayload { mid: cid }).await?;
+        if video == 0 {
+            return Ok((cid, 0));
+        }
+
+        // info!("Fetching published videos of up<{}>", up.name);
+        let page = (video - 1) / 30 + 1;
+        let mut tasks = futures::stream::iter(1..=page)
+            .map(|pn| async move {
+                let InUpResp {
+                    data:
+                        InUpData {
+                            list: InUpList { vlist },
+                        },
+                } = BiliApi::request(InUpPayload::new(cid, pn, 30).await?)
+                    .await
+                    .map_err(|err| {
+                        anyhow::anyhow!("Failed to fetch up space page {pn}, error: {:?}", err)
+                    })?;
+                Ok::<_, anyhow::Error>(vlist)
+            })
+            .buffer_unordered(8);
+
+        let mut medias = vec![];
+
+        while let Some(res) = tasks.next().await {
+            match res {
+                Ok(list) => medias.extend(list),
+                Err(e) => error!("{}", e),
+            }
+        }
+
+        let state = up_media::UpMediaEntity::insert_many(medias.into_iter().map(|m| {
+            // debug!("Linking media<{}> and up<{}>", m.title, up.name);
+            up_media::UpMediaModel {
+                id: m.id,
+                up_id: cid,
+            }
+            .into_active_model()
+        }))
+        .exec_without_returning(&db.db)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "insert many upper medias error: {:?}, upperid<{:?}>, caller:{:?}",
+                err,
+                cid,
+                caller
+            )
+        });
+
+        state.map(|state| (cid, state))
+    }
+}

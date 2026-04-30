@@ -34,7 +34,7 @@ pub fn command_login(
 ) {
     for message in console_message.read() {
         let db = db.clone();
-        let (args, _argv) = argmap::parse(message.0.iter());
+        let ConsoleTrims { args, argv: _ } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("auth")) {
             continue;

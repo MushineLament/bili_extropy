@@ -12,3 +12,5 @@ pub type UpperCid = i64;
 pub type MediaAid = i64;
 pub type BvId = String;
 pub type Title = String;
+
+pub type CollectionId = i64;

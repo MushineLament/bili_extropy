@@ -1,6 +1,6 @@
 use sea_orm_migration::{prelude::*, schema::*};
 
-use crate::m20250413_000001_create_table::{Media, Up};
+use crate::m20250413_000001_create_table::{Media, Upper};
 
 #[derive(DeriveIden)]
 pub enum MediaUp {
@@ -28,7 +28,7 @@ impl MediaUp {
                 ForeignKey::create()
                     .name("mediaup_up_fk")
                     .from(MediaUp::Table, MediaUp::UpId)
-                    .to(Up::Table, Up::UpId)
+                    .to(Upper::Table, Upper::UpperId)
                     .on_delete(ForeignKeyAction::Cascade)
                     .on_update(ForeignKeyAction::Cascade),
             )

@@ -97,6 +97,18 @@ impl ToTableRecord<5> for Model {
     }
 }
 
+impl ToTableRecord<5> for &Model {
+    fn to_record(&self) -> [Cow<'_, str>; 5] {
+        [
+            Cow::Owned(self.aid.to_string()),
+            Cow::Borrowed(&self.bv_id),
+            Cow::Borrowed(&self.title),
+            Cow::Owned(self.r#type.to_string()),
+            Cow::Borrowed(&self.state),
+        ]
+    }
+}
+
 // ========== 以下为 API 响应结构体，保持不变 ==========
 
 use core::fmt;

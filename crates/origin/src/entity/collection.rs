@@ -95,12 +95,12 @@ use serde::Deserialize;
 use crate::entity::media::{MediaCollection, MediaUp};
 
 #[derive(Debug, Deserialize)]
-pub struct ListSetResp {
-    pub data: ListSetData,
+pub struct ListUpperCollectResp {
+    pub data: ListUpperCollectData,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ListSetData {
+pub struct ListUpperCollectData {
     pub list: Vec<Collection>,
 }
 

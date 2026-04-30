@@ -41,7 +41,7 @@ pub fn upsert_download_list(
     mut lists: ResMut<DownloadList>,
 ) {
     for message in console_message.read() {
-        let (args, _argv) = argmap::parse(message.0.iter());
+        let ConsoleTrims { args, argv: _ } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("clone")) {
             continue;

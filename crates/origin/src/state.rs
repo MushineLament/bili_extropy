@@ -42,7 +42,7 @@ impl_display_fromstr!(AccountState {
     Expired,
 });
 
-impl_display_fromstr!(SetState {
+impl_display_fromstr!(CollectionState {
     Active,
     Inactive,
     Unreachable,

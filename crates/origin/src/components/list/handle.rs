@@ -1,5 +1,5 @@
 use bevy::{
-    ecs::{component::Component, resource::Resource},
+    ecs::component::Component,
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
@@ -10,14 +10,18 @@ use crate::{
     db::Db,
     entity::{
         account::{self, AccountModel},
+        account_collection::{self, AccountCollectionModel},
+        collection::{self, CollectionModel},
+        collection_media,
         media::{self, MediaModel},
+        up, up_account,
     },
 };
 
-#[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ListMedias(pub ECSHandleResult<Vec<MediaModel>, anyhow::Error>);
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListMediasTask(pub ECSHandleResult<Vec<MediaModel>, anyhow::Error>);
 
-impl ListMedias {
+impl ListMediasTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
             let medias = media::MediaEntity::find().all(&db.db).await?;
@@ -35,6 +39,84 @@ impl ListAccountTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
             let medias = account::AccountEntity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListAccountCollectionsTask(
+    pub ECSHandleResult<Vec<AccountCollectionModel>, anyhow::Error>,
+);
+
+impl ListAccountCollectionsTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = account_collection::AccountCollectionEntity::find()
+                .all(&db.db)
+                .await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListAccountFollwedTask(pub ECSHandleResult<Vec<up_account::Model>, anyhow::Error>);
+
+impl ListAccountFollwedTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = up_account::Entity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListCollectionTask(pub ECSHandleResult<Vec<CollectionModel>, anyhow::Error>);
+
+impl ListCollectionTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = collection::CollectionEntity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListUppersTask(pub ECSHandleResult<Vec<up::UpperModel>, anyhow::Error>);
+
+impl ListUppersTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = up::UpperEntity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListCollectionMediasTask(
+    pub ECSHandleResult<Vec<collection_media::CollectionMediaModel>, anyhow::Error>,
+);
+
+impl ListCollectionMediasTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = collection_media::CollectionMediaEntity::find()
+                .all(&db.db)
+                .await?;
             Ok(medias)
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);

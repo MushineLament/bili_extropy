@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use sea_orm::entity::prelude::*;
 
-use crate::table::ToTableRecord;
+use crate::{entity::UpperCid, table::ToTableRecord};
 
 type Entity = AccountEntity;
 type Model = AccountModel;
@@ -20,7 +20,7 @@ impl EntityName for AccountEntity {
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct AccountModel {
-    pub account_id: i64,
+    pub account_id: UpperCid,
     pub name: String,
     pub cookies: String,
     pub state: String,
