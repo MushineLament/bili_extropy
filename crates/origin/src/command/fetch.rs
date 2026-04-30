@@ -57,38 +57,39 @@ use crate::{
 pub const HELP_FETCH: &str = r#"
 Back up your favorite bilibili online resources with RESP.
 
-Usage: fetch <COMMAND> <ID> [SUB_COMMAND] [OPTIONS]
+Usage: fetch <COMMAND> [SUB_COMMAND] [OPTIONS] 
 
 Commands:
-    account <account_id>        Fetch data related to a login account.
+    account                     Fetch data related to a login account.
         followings                  Fetch account's followed list.
         collections                 Fetch account's collections list.
-
-    upper <upper_id>            Fetch data related to an Upper.
+        
+    upper                       Fetch data related to an Upper.
         followings                  Fetch upper's followed list.
         collections                 Fetch upper's collection list.
         medias                      Fetch upper's media list.
 
-    collection <collection_id>  Fetch data related to a Collection.
+    collection                  Fetch data related to a Collection.
         medias                      Fetch collection's media list.
     
-    media <cid/bvid>            Fetch data related to a single media.
+    media                       Fetch data related to a single media.
     
     help                        Print this message or the help of the given subcommand(s)
 
 Options:
-    -v, --verbose  Show debug messages
-    -h, --help     Print help
-    -V, --version  Print version
-    
+    -v,         --verbose           Show debug messages
+    -h,         --help              Print help
+    -V,         --version           Print version
+    -id [ID],   --id [ID]           Point ID
+
 Example:
-    fetch account [ID]
-    fetch upper [ID] followings
+    fetch account followings                     # uses active account ID
+    fetch account followings --id 123456         # override account ID
+    fetch upper followings
 "#;
 
 const FETCH_COMMAND_INDEX: usize = 2;
-const FETCH_ID_INDEX: usize = 3;
-const FETCH_SUBCOMMAND_INDEX: usize = 4;
+const FETCH_SUBCOMMAND_INDEX: usize = 3;
 
 pub struct CommandFetchPlugin;
 
@@ -122,52 +123,78 @@ pub fn spawn_fetch_task(
 ) {
     for message in console_message.read() {
         // let db = db.clone();
-        let ConsoleTrims { args, argv: _ } = message;
+        let ConsoleTrims { args, argv } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("fetch")) {
             continue;
         }
 
-        let id = args
-            .get(FETCH_ID_INDEX)
-            .ok_or(IntErrorKind::Empty)
-            .and_then(|str| str.parse::<i64>().map_err(|err| *err.kind()));
+        let point_id = argv
+            .get("id")
+            .iter()
+            .map(|str| str.iter())
+            .flatten()
+            .filter_map(|str| str.parse::<i64>().ok())
+            .collect::<Vec<_>>();
+
+        let accounts = active_account.try_result();
+
+        let ids = if point_id.is_empty() {
+            accounts
+                .as_ref()
+                .ok()
+                .iter()
+                .map(|accounts| accounts.iter())
+                .flatten()
+                .map(|account| account.account_id)
+                .collect::<Vec<_>>()
+        } else {
+            point_id
+        };
+
+        if ids.is_empty() {
+            error!("not any point id or active account");
+            continue;
+        }
 
         match args.get(FETCH_COMMAND_INDEX).map(String::as_str) {
             // 上述有问题
             Some("account") => {
-                let Ok(accounts) = active_account.try_result() else {
+                let Ok(accounts) = accounts else {
                     error!("not any active account");
                     continue;
                 };
 
-                let id = match id {
-                    Ok(id) => id,
-                    Err(err) => {
-                        error!("not a account id,error: {:?}", err);
-                        continue;
-                    }
-                };
-
-                let Some(account) = accounts.iter().find(|model| model.account_id == id) else {
-                    error!("not this active account id");
-                    continue;
-                };
+                let accounts = accounts
+                    .iter()
+                    .filter(|model| ids.contains(&model.account_id));
 
                 match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
                     Some("followings") => {
-                        commands.spawn(FetchAccountFollowingData::new(
-                            db.clone(),
-                            account.clone(),
-                            runtimer.as_mut(),
-                        ));
+                        commands.spawn_batch(
+                            accounts
+                                .map(|account| {
+                                    FetchAccountFollowingData::new(
+                                        db.clone(),
+                                        account.clone(),
+                                        runtimer.as_mut(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                     }
                     Some("collections") => {
-                        commands.spawn(FetchAccountCollectionIdData::new(
-                            db.clone(),
-                            account.clone(),
-                            runtimer.as_mut(),
-                        ));
+                        commands.spawn_batch(
+                            accounts
+                                .map(|account| {
+                                    FetchAccountCollectionIdData::new(
+                                        db.clone(),
+                                        account.clone(),
+                                        runtimer.as_mut(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                     }
                     Some(unkown) => {
                         error!("not has this command: {:?}", unkown);
@@ -176,50 +203,51 @@ pub fn spawn_fetch_task(
                 }
             }
             Some("upper") => {
-                let account = active_account.try_result();
-
-                let id = match id {
-                    Ok(id) => id,
-                    Err(err) => {
-                        error!("not a upper id,error: {:?}", err);
-                        continue;
-                    }
-                };
-
-                let cookies = account
+                let cookies = accounts
                     .ok()
-                    .iter()
-                    .map(|accounts| accounts.iter())
-                    .flatten()
-                    .find_or_first(|model| model.account_id == id)
+                    .and_then(|accounts| accounts.first())
                     .map(|model| model.cookies.clone());
 
                 match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
                     Some("followings") => {
-                        info!("Fetching upper following with id<{}>", id);
+                        commands.spawn_batch(
+                            ids.into_iter()
+                                .map(|id| {
+                                    info!("Fetching upper following with id<{}>", id);
 
-                        commands.spawn(FetchUpperFollowingData::new(
-                            db.clone(),
-                            id,
-                            runtimer.as_mut(),
-                            cookies,
-                        ));
+                                    FetchUpperFollowingData::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.clone(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                     }
                     Some("collections") => {
-                        commands.spawn(FetchUpperCollectionData::new(
-                            db.clone(),
-                            runtimer.as_mut(),
-                            id,
-                            cookies,
-                        ));
+                        commands.spawn_batch(
+                            ids.into_iter()
+                                .map(|id| {
+                                    FetchUpperCollectionData::new(
+                                        db.clone(),
+                                        runtimer.as_mut(),
+                                        id,
+                                        cookies.clone(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                     }
 
                     Some("medias") => {
-                        commands.spawn(FetchUpperMediasData::new(
-                            db.clone(),
-                            id,
-                            runtimer.as_mut(),
-                        ));
+                        commands.spawn_batch(
+                            ids.into_iter()
+                                .map(|id| {
+                                    FetchUpperMediasData::new(db.clone(), id, runtimer.as_mut())
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                     }
 
                     Some(unkown) => {
@@ -229,19 +257,9 @@ pub fn spawn_fetch_task(
                 }
             }
             Some("collection") => {
-                let id = match id {
-                    Ok(id) => id,
-                    Err(err) => {
-                        error!("not a collection id,error: {:?}", err);
-                        continue;
-                    }
-                };
-
                 match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
                     Some("medias") => {
-                        let account = active_account.try_result();
-
-                        let _cookies = account
+                        let _cookies = accounts
                             .ok()
                             .iter()
                             .map(|accounts| accounts.iter())
@@ -250,17 +268,19 @@ pub fn spawn_fetch_task(
                             .next()
                             .map(|model| {
                                 info!(
-                                    "Fetching collection id<{:?}> with account<{:?}>",
-                                    id, model.account_id
+                                    "Fetching collection ids<{:?}> with account<{:?}>",
+                                    ids, model.account_id
                                 );
                                 model.cookies.clone()
                             });
 
-                        commands.spawn(FetchCollectMediasData::new(
-                            db.clone(),
-                            id,
-                            runtimer.as_mut(),
-                        ));
+                        commands.spawn_batch(
+                            ids.into_iter()
+                                .map(|id| {
+                                    FetchCollectMediasData::new(db.clone(), id, runtimer.as_mut())
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                     }
                     Some(unkown) => {
                         error!("not has this command: {:?}", unkown);
@@ -270,10 +290,13 @@ pub fn spawn_fetch_task(
             }
 
             Some("media") => {
-                let Some(bvid) = args.get(FETCH_ID_INDEX).map(|id| DownloadWay(id.clone())) else {
-                    error!("plase input a aid or bvid");
-                    continue;
-                };
+                let bvids = argv
+                    .get("id")
+                    .iter()
+                    .map(|str| str.iter().map(String::as_str))
+                    .flatten()
+                    .map(|str| str.to_string())
+                    .collect::<Vec<_>>();
 
                 match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
                     // Some("collectionid") => {
@@ -287,7 +310,18 @@ pub fn spawn_fetch_task(
                         error!("not has this command: {:?}", unkown);
                     }
                     None => {
-                        commands.spawn(FetchMediaData::new(db.clone(), bvid, runtimer.as_mut()));
+                        commands.spawn_batch(
+                            bvids
+                                .into_iter()
+                                .map(|bvid| {
+                                    FetchMediaData::new(
+                                        db.clone(),
+                                        DownloadWay(bvid),
+                                        runtimer.as_mut(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
                     }
                 }
             }
