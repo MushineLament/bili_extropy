@@ -31,10 +31,6 @@ pub struct Model {
     #[serde(default)]
     pub r#type: String,
 
-    #[sea_orm(default_value = "normal")]
-    #[serde(skip_deserializing, default = "default_state")]
-    pub state: String,
-
     #[sea_orm(ignore)]
     #[serde(default)]
     pub pic: Option<Url>,
@@ -85,26 +81,24 @@ impl Related<crate::entity::upper::Entity> for Entity {
 
 impl ActiveModelBehavior for ActiveModel {}
 
-impl ToTableRecord<5> for Model {
-    fn to_record(&self) -> [Cow<'_, str>; 5] {
+impl ToTableRecord<4> for Model {
+    fn to_record(&self) -> [Cow<'_, str>; 4] {
         [
             Cow::Owned(self.aid.to_string()),
             Cow::Borrowed(&self.bv_id),
             Cow::Borrowed(&self.title),
             Cow::Owned(self.r#type.to_string()),
-            Cow::Borrowed(&self.state),
         ]
     }
 }
 
-impl ToTableRecord<5> for &Model {
-    fn to_record(&self) -> [Cow<'_, str>; 5] {
+impl ToTableRecord<4> for &Model {
+    fn to_record(&self) -> [Cow<'_, str>; 4] {
         [
             Cow::Owned(self.aid.to_string()),
             Cow::Borrowed(&self.bv_id),
             Cow::Borrowed(&self.title),
             Cow::Owned(self.r#type.to_string()),
-            Cow::Borrowed(&self.state),
         ]
     }
 }

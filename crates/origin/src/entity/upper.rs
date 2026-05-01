@@ -20,7 +20,6 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub upper_id: UpperCid,
     pub name: String,
-    pub state: String,
 }
 
 // ========== 关系定义 ==========
@@ -67,12 +66,11 @@ impl ActiveModelBehavior for ActiveModel {}
 
 // ========== 表格显示 trait 实现 ==========
 
-impl ToTableRecord<3> for Model {
-    fn to_record(&self) -> [Cow<'_, str>; 3] {
+impl ToTableRecord<2> for Model {
+    fn to_record(&self) -> [Cow<'_, str>; 2] {
         [
             Cow::Owned(self.upper_id.to_string()),
             Cow::Borrowed(&self.name),
-            Cow::Owned(self.state.to_string()),
         ]
     }
 }

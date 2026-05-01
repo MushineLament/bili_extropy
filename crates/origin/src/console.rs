@@ -215,6 +215,20 @@ pub struct ConsoleTrims {
     pub argv: Cow<'static, HashMap<String, Vec<String>>>,
 }
 
+impl ConsoleTrims {
+    pub fn ids(&self) -> impl IntoIterator<Item = &str> {
+        self.argv
+            .get("id")
+            .into_iter()
+            .flat_map(|v| v.iter())
+            .map(String::as_str)
+    }
+
+    pub fn is_empty_ids(&self) -> bool {
+        self.argv.get("id").is_none_or(|vec| vec.is_empty())
+    }
+}
+
 #[derive(Debug)]
 pub struct ConsoleResult {
     pub console: Console,

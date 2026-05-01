@@ -10,7 +10,7 @@ pub struct UpMediaEntity;
 
 impl EntityName for UpMediaEntity {
     fn table_name(&self) -> &str {
-        "media_upper"
+        "upper_media"
     }
 }
 

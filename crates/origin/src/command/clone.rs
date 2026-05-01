@@ -12,6 +12,7 @@ use indicatif::{MultiProgress, ProgressDrawTarget};
 use tracing::{error, info};
 
 use crate::{
+    command::downloadrule::ActiveDownloadrule,
     components::{
         auth::handle::ActiveAccounts,
         download::{DownloadHandle, DownloadList, DownloadWay},
@@ -68,7 +69,8 @@ pub fn spawn_download_task(
     mut lists: ResMut<DownloadList>,
     mut accounts: ResMut<ActiveAccounts>,
     query_handle: Query<&DownloadHandle>,
-    mut active_status: ResMut<ActiveStatus>,
+    active_status: ResMut<ActiveStatus>,
+    active_downloadrule: ResMut<ActiveDownloadrule>,
 ) {
     if lists.is_empty() {
         return;
@@ -97,14 +99,6 @@ pub fn spawn_download_task(
         take_count as usize
     };
 
-    let status = match active_status.try_result() {
-        Ok(result) => result,
-        Err(err) => {
-            error!("get active status error:{:?}", err);
-            return;
-        }
-    };
-
     for list in lists.drain(0..take_count) {
         info!("spawn a download handle");
         commands.spawn(DownloadHandle::new(
@@ -113,7 +107,8 @@ pub fn spawn_download_task(
             &account.cookies,
             list,
             runtimer.as_mut(),
-            status.clone(),
+            active_status.0.clone(),
+            active_downloadrule.0.clone(),
         ));
     }
 }

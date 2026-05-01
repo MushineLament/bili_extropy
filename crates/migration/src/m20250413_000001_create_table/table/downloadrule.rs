@@ -1,35 +1,53 @@
 use sea_orm_migration::{prelude::*, schema::*};
 
 #[derive(DeriveIden)]
-pub enum DownloadRule {
+pub enum Downloadrule {
     Table,
     Id,
     Name,
     Size,
+    RelationSize,
     Date,
+    RelationDate,
     Repeat,
     State,
 }
 
-impl DownloadRule {
+impl Downloadrule {
     pub fn create_table() -> TableCreateStatement {
         Table::create()
-            .table(DownloadRule::Table)
+            .table(Downloadrule::Table)
             .if_not_exists()
-            .col(big_unsigned(DownloadRule::Id))
-            .col(string(DownloadRule::Name))
-            .col(big_unsigned(DownloadRule::Size))
-            .col(date_time(DownloadRule::Date))
-            .col(boolean(DownloadRule::Repeat))
+            .col(
+                big_unsigned(Downloadrule::Id)
+                    .not_null()
+                    .auto_increment()
+                    .primary_key(),
+            )
+            .col(string(Downloadrule::Name))
+            .col(ColumnDef::new(Downloadrule::Size).big_unsigned().null())
+            .col(
+                ColumnDef::new(Downloadrule::RelationSize)
+                    .enumeration("relation_size", ["<=", "<", "==", ">", ">="])
+                    .take()
+                    .null(),
+            )
+            .col(ColumnDef::new(Downloadrule::Date).date_time().null())
+            .col(
+                ColumnDef::new(Downloadrule::RelationDate)
+                    .enumeration("relation_date", ["<=", "<", "==", ">", ">="])
+                    .take()
+                    .null(),
+            )
+            .col(boolean(Downloadrule::Repeat).default(true))
             .col(
                 enumeration(
-                    DownloadRule::State,
+                    Downloadrule::State,
                     "state",
                     ["Active", "Inactive", "Expired"],
                 )
-                .default("Active"),
+                .default("Inactive"),
             )
-            .primary_key(Index::create().col(DownloadRule::Id))
             .to_owned()
     }
 }

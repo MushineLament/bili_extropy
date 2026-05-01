@@ -8,6 +8,10 @@ pub use table::*;
 mod midtable;
 pub use midtable::*;
 
+mod detailtable;
+pub use detailtable::*;
+
+
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -20,7 +24,7 @@ impl MigrationTrait for Migration {
         manager.create_table(Account::create_table()).await?;
         manager.create_table(Upper::create_table()).await?;
         manager.create_table(Collection::create_table()).await?;
-        manager.create_table(DownloadRule::create_table()).await?;
+        manager.create_table(Downloadrule::create_table()).await?;
         manager.create_table(DownloadTask::create_table()).await?;
 
         // 2. 中间表（依赖基表）
@@ -31,13 +35,13 @@ impl MigrationTrait for Migration {
         manager
             .create_table(CollectionMedia::create_table())
             .await?;
-        manager.create_table(MediaUpper::create_table()).await?;
+        manager.create_table(UpperMedia::create_table()).await?;
         manager
             .create_table(AccountCollection::create_table())
             .await?;
         manager.create_table(UpperAccount::create_table()).await?;
         manager
-            .create_table(StatusDonwloadRule::create_table())
+            .create_table(StatusDownloadrule::create_table())
             .await?;
         Ok(())
     }
@@ -51,7 +55,7 @@ impl MigrationTrait for Migration {
             .drop_table(Table::drop().table(AccountCollection::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(MediaUpper::Table).to_owned())
+            .drop_table(Table::drop().table(UpperMedia::Table).to_owned())
             .await?;
         manager
             .drop_table(Table::drop().table(CollectionMedia::Table).to_owned())
@@ -65,7 +69,7 @@ impl MigrationTrait for Migration {
             .await?; // 添加这一行
 
         manager
-            .drop_table(Table::drop().table(StatusDonwloadRule::Table).to_owned())
+            .drop_table(Table::drop().table(StatusDownloadrule::Table).to_owned())
             .await?;
 
         // 再删除基表

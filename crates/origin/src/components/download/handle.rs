@@ -18,8 +18,10 @@ use crate::{
     db::Db,
     entity::{
         BvId, MediaAid,
+        downloadrule::DownloadruleModel,
         media::{self, Media, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
         status::StatusModel,
+        status_downloadrule::{StatusDownloadruleEntity, StatusDownloadruleModel},
     },
     output::{EntryOuput, IndexAudio, IndexOuput, IndexVideo},
     payload::DashPayload,
@@ -97,9 +99,15 @@ impl DownloadHandle {
         list: DownloadWay,
         runtimer: &mut TokioTasksRuntime,
         active_status: Cow<'static, Vec<StatusModel>>,
+        active_downloadrule: Cow<'static, Vec<DownloadruleModel>>,
     ) -> Self {
         let cookies = cookies.into();
         let task = async move {
+            let media_status_downloadrule = StatusDownloadruleEntity::find()
+                .all(&db.db)
+                .await
+                .unwrap_or_default();
+
             add_cookie_jar(parse_cookies(&cookies));
 
             let bvid = list.0.clone();
@@ -126,7 +134,6 @@ impl DownloadHandle {
                 bv_id: media.bvid.to_owned(),
                 title: media.title.to_owned(),
                 r#type: media.r#type.to_string(),
-                state: MediaState::Pending.to_string(),
                 cid: media.cid,
                 pic: None,
             };
@@ -140,7 +147,6 @@ impl DownloadHandle {
                                 media::Column::Cid,
                                 media::Column::Title,
                                 media::Column::Type,
-                                media::Column::State,
                             ])
                             .to_owned(),
                     )
@@ -161,6 +167,8 @@ impl DownloadHandle {
                 bars.clone(),
                 &Path::new(TEMP_DOWNLOAD_FOLDER),
                 active_status.as_ref(),
+                active_downloadrule.as_ref(),
+                media_status_downloadrule,
             )
             .await
             .map(|_| bvid);
@@ -282,6 +290,8 @@ pub async fn download(
     bars: MultiProgress,
     tmp_path: &Path,
     active_status: &[StatusModel],
+    active_downloadrule: &[DownloadruleModel],
+    media_status_downloadrule: Vec<StatusDownloadruleModel>,
 ) -> Result<(), DownloadFileError> {
     if !Path::new(tmp_path).exists() {
         let _ = fs::create_dir_all(tmp_path)?;
@@ -337,11 +347,6 @@ pub async fn download(
     else {
         media::MediaEntity::update(media::ActiveModel {
             aid: Unchanged(media.aid),
-            state: Set(match code {
-                -403 | 62012 | 62002 => MediaState::PermissionDenied,
-                _ => MediaState::Expired,
-            }
-            .to_string()),
             ..Default::default()
         })
         .exec(&db.db)
@@ -559,7 +564,6 @@ pub async fn download(
 
     media::MediaEntity::update(media::ActiveModel {
         aid: Unchanged(media.aid),
-        state: Set(MediaState::Completed.to_string()),
         ..Default::default()
     })
     .exec(&db.db)

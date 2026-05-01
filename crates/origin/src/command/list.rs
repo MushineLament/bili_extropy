@@ -16,7 +16,8 @@ use crate::{
         download::DownloadHandle,
         list::handle::{
             ListAccountCollectionsTask, ListAccountFollwedTask, ListAccountTask,
-            ListCollectionMediasTask, ListCollectionTask, ListMediasTask, ListUppersTask,
+            ListCollectionMediasTask, ListCollectionTask, ListDownloadruleTask, ListMediasTask,
+            ListStatusDownloadRuleTask, ListStatusTask, ListUppersTask,
         },
     },
     console::ConsoleTrims,
@@ -78,6 +79,9 @@ impl Plugin for CommandListPlugin {
                     list_uppers_task,
                     list_collection_medias_task,
                     list_medias,
+                    list_download_rule_task,
+                    list_status_download_rule_task,
+                    list_status_task,
                 )
                     .after(spawn_list_task),
             ),
@@ -95,39 +99,21 @@ pub fn spawn_list_task(
 ) {
     for message in console_message.read() {
         let _db = db.clone();
-        let ConsoleTrims { args, argv } = message;
+        let ConsoleTrims { args, argv: _ } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("list")) {
             continue;
         }
 
-        let point_id = argv
-            .get("id")
-            .iter()
-            .map(|str| str.iter())
-            .flatten()
-            .filter_map(|str| str.parse::<i64>().ok())
-            .collect::<Vec<_>>();
-
-        let accounts = active_account.try_result();
-
-        let ids = if point_id.is_empty() {
-            accounts
-                .as_ref()
-                .ok()
-                .iter()
-                .map(|accounts| accounts.iter())
-                .flatten()
-                .map(|account| account.account_id)
-                .collect::<Vec<_>>()
+        let _ids = if message.is_empty_ids() {
+            active_account.ids_mut().into_iter().collect::<Vec<_>>()
         } else {
-            point_id
+            message
+                .ids()
+                .into_iter()
+                .filter_map(|str| str.parse::<i64>().ok())
+                .collect::<Vec<_>>()
         };
-
-        if ids.is_empty() {
-            error!("not any point id or active account");
-            continue;
-        }
 
         match args.get(LIST_COMMAND_INDEX).map(String::as_str) {
             Some("account") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
@@ -153,7 +139,7 @@ pub fn spawn_list_task(
             Some("collection") => {
                 commands.spawn(ListCollectionTask::new(db.clone(), runtimer.as_mut()));
             }
-            Some("medias") => match args.get(3).map(String::as_str) {
+            Some("medias") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
                 Some("collection") => {
                     commands.spawn(ListCollectionMediasTask::new(db.clone(), runtimer.as_mut()));
                 }
@@ -162,6 +148,35 @@ pub fn spawn_list_task(
                 }
                 None => {
                     commands.spawn(ListMediasTask::new(db.clone(), runtimer.as_mut()));
+                }
+            },
+
+            Some("status") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("downloadrule") => {
+                    commands.spawn(ListStatusDownloadRuleTask::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                    ));
+                }
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {
+                    commands.spawn(ListStatusTask::new(db.clone(), runtimer.as_mut()));
+                }
+            },
+            Some("downloadrule") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("status") => {
+                    commands.spawn(ListStatusDownloadRuleTask::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                    ));
+                }
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {
+                    commands.spawn(ListDownloadruleTask::new(db.clone(), runtimer.as_mut()));
                 }
             },
 
@@ -277,6 +292,59 @@ pub fn list_medias(mut commands: Commands, query: Query<(&mut ListMediasTask, En
         let table = result
             .iter()
             .table_head(["id", "bvid", "title", "type", "state"]);
+        info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_download_rule_task(
+    mut commands: Commands,
+    query: Query<(&mut ListDownloadruleTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        let table = result.iter().table_head([
+            "id",
+            "name",
+            "size",
+            "relation size",
+            "date",
+            "relation date",
+            "repeat",
+            "state",
+        ]);
+        info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_status_download_rule_task(
+    mut commands: Commands,
+    query: Query<(&mut ListStatusDownloadRuleTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        let table = result.iter().table_head(["status id", "rule id"]);
+        info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_status_task(mut commands: Commands, query: Query<(&mut ListStatusTask, Entity)>) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        let table = result
+            .iter()
+            .table_head(["id", "folder name", "path", "state"]);
         info!("\n{}\nrows: {}", table, table.count_rows() - 1);
     }
 }

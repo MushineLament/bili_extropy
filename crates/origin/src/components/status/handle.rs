@@ -1,39 +1,73 @@
 use std::borrow::Cow;
 
-use anyhow::Result;
 use bevy::{
     ecs::{component::Component, resource::Resource},
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use migration::Expr;
-use sea_orm::{ColumnTrait, EntityTrait as _, QueryFilter};
+use migration::OnConflict;
+use sea_orm::{ActiveValue, EntityTrait as _, IntoActiveModel};
 use strum::{Display, EnumString};
 
 use crate::{
     components::handle::ECSHandleResult,
     db::Db,
-    entity::status::{self, StatusActiveModel, StatusEntity, StatusModel},
+    entity::{
+        status::{self, StatusModel},
+        status_downloadrule::{self, StatusDownloadruleModel},
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumString, Display)]
 pub enum StatusState {
     Active,
     Inactive,
-    Switch,
+    Exclusive,
 }
 
-#[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ActiveStatus(pub ECSHandleResult<Cow<'static, Vec<StatusModel>>, anyhow::Error>);
+#[derive(Debug, Resource, Deref, DerefMut, Default, Clone)]
+pub struct ActiveStatus(pub Cow<'static, Vec<StatusModel>>);
 
-impl ActiveStatus {
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct LoadStatusTask(pub ECSHandleResult<Vec<status::StatusModel>, anyhow::Error>);
+
+impl LoadStatusTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
-            let task = StatusEntity::find()
-                .filter(status::Column::State.eq(StatusState::Active.to_string()))
-                .all(&db.db)
+            let medias = status::StatusEntity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct StatusInsertTask(pub ECSHandleResult<StatusModel, anyhow::Error>);
+
+impl StatusInsertTask {
+    pub fn new(
+        db: Db,
+        runtimer: &mut TokioTasksRuntime,
+        activemodel: status::StatusActiveModel,
+    ) -> Self {
+        let task = async move {
+            let db = db;
+
+            let model = status::StatusEntity::insert(activemodel)
+                .on_conflict(
+                    OnConflict::column(status::Column::Id)
+                        .update_columns([
+                            status::Column::Name,
+                            status::Column::Path,
+                            status::Column::State,
+                        ])
+                        .to_owned(),
+                )
+                .exec_with_returning(&db.db)
                 .await?;
-            Ok(Cow::Owned(task))
+
+            Ok(model)
         };
 
         let handle = runtimer.spawn_background_task(|_ctx| task);
@@ -43,51 +77,38 @@ impl ActiveStatus {
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct AddStatusTask(pub ECSHandleResult<StatusModel, anyhow::Error>);
+pub struct StatusRelatedDownloadruleTask(
+    pub ECSHandleResult<StatusDownloadruleModel, anyhow::Error>,
+);
 
-impl AddStatusTask {
+impl StatusRelatedDownloadruleTask {
     pub fn new(
         db: Db,
         runtimer: &mut TokioTasksRuntime,
-        name: String,
-        path: String,
-        state: StatusState,
+        status_id: ActiveValue<i64>,
+        rule_id: ActiveValue<i64>,
     ) -> Self {
         let task = async move {
             let db = db;
-            match db.get_status_by_folder(name.as_str(), path.as_str()).await {
-                Result::Ok(model) => {
-                    db.activate_status_by_id(model.id).await?;
-                    Ok(model)
-                }
-                Err(_) => {
-                    let inserted = StatusEntity::insert(StatusActiveModel {
-                        id: sea_orm::ActiveValue::NotSet,
-                        name: sea_orm::ActiveValue::Set(name),
-                        path: sea_orm::ActiveValue::Set(path),
-                        state: sea_orm::ActiveValue::Set(state.to_string()),
-                    })
-                    .exec(&db.db)
-                    .await?;
 
-                    let generated_id = inserted.last_insert_id;
+            let model = status_downloadrule::StatusDownloadruleEntity::insert(
+                status_downloadrule::ActiveModel { status_id, rule_id },
+            )
+            .on_conflict(
+                OnConflict::columns([
+                    status_downloadrule::Column::StatusId,
+                    status_downloadrule::Column::RuleId,
+                ])
+                .update_columns([
+                    status_downloadrule::Column::StatusId,
+                    status_downloadrule::Column::RuleId,
+                ])
+                .to_owned(),
+            )
+            .exec_with_returning(&db.db)
+            .await?;
 
-                    let status = db.get_status_by_id(generated_id).await?;
-
-                    if state == StatusState::Switch {
-                        StatusEntity::update_many()
-                            .filter(status::Column::Id.eq(generated_id))
-                            .col_expr(
-                                status::Column::State,
-                                Expr::value(StatusState::Inactive.to_string()),
-                            )
-                            .exec(&db.db)
-                            .await?;
-                    }
-
-                    Ok(status)
-                }
-            }
+            Ok(model)
         };
 
         let handle = runtimer.spawn_background_task(|_ctx| task);

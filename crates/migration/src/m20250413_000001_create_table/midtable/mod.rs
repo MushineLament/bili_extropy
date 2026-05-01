@@ -1,5 +1,5 @@
-mod media_upper;
-pub use media_upper::*;
+mod upper_media;
+pub use upper_media::*;
 
 mod collection_media;
 pub use collection_media::*;

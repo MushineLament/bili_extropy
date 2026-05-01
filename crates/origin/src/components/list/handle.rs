@@ -6,15 +6,16 @@ use bevy_tokio_tasks::TokioTasksRuntime;
 use sea_orm::EntityTrait as _;
 
 use crate::{
-    components::handle::ECSHandleResult,
+    command::downloadrule::LoadDownloadruleTask,
+    components::{handle::ECSHandleResult, status::handle::LoadStatusTask},
     db::Db,
     entity::{
         account::{self, AccountModel},
         account_collection::{self, AccountCollectionModel},
         collection::{self, CollectionModel},
-        collection_media,
+        collection_media, downloadrule,
         media::{self, MediaModel},
-        upper, upper_account,
+        status, status_downloadrule, upper, upper_account,
     },
 };
 
@@ -121,5 +122,39 @@ impl ListCollectionMediasTask {
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);
         Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListDownloadruleTask(
+    pub ECSHandleResult<Vec<downloadrule::DownloadruleModel>, anyhow::Error>,
+);
+
+impl ListDownloadruleTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = downloadrule::DownloadruleEntity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListStatusDownloadRuleTask(pub LoadDownloadruleTask);
+
+impl ListStatusDownloadRuleTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        Self(LoadDownloadruleTask::new(db, runtimer))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListStatusTask(pub LoadStatusTask);
+
+impl ListStatusTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        Self(LoadStatusTask::new(db, runtimer))
     }
 }

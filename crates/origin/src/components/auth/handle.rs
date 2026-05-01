@@ -122,4 +122,14 @@ impl ActiveAccounts {
 
         Self(task)
     }
+
+    pub fn ids_mut(&mut self) -> impl IntoIterator<Item = i64> {
+        self.try_result()
+            .ok()
+            .iter()
+            .map(|accounts| accounts.iter())
+            .flatten()
+            .map(|account| account.account_id)
+            .collect::<Vec<_>>()
+    }
 }

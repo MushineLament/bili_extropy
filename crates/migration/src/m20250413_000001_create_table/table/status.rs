@@ -19,8 +19,8 @@ impl Status {
             .table(Status::Table)
             .if_not_exists()
             .col(big_unsigned(Status::Id).auto_increment().primary_key())
-            .col(string_null(Status::Name))
-            .col(string(Status::Path))
+            .col(string(Status::Name).default("."))
+            .col(string(Status::Path).default("."))
             .col(
                 enumeration(
                     Status::State,
