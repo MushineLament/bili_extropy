@@ -16,6 +16,7 @@ use crate::{
     components::{
         download::{MediaInfoAidPayload, MediaInfoBvidPayload},
         handle::{ECSHandle, ECSHandleResult},
+        status::handle::{DownloadruleId, StatusId},
     },
     cookies::{add_cookie_jar, parse_cookies},
     db::Db,
@@ -24,7 +25,6 @@ use crate::{
         downloadrule::DownloadruleModel,
         media::{self, Media, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
         status::StatusModel,
-        status_downloadrule::{StatusDownloadruleEntity, StatusDownloadruleModel},
     },
     output::{EntryOuput, IndexAudio, IndexOuput, IndexVideo},
     payload::DashPayload,
@@ -34,11 +34,16 @@ use anyhow::{Result, anyhow};
 use api_req::{ApiCaller as _, error::ApiErr};
 use bevy::{
     ecs::{change_detection::MaybeLocation, component::Component},
-    platform::collections::{HashMap, HashSet, hash_map},
+    platform::{
+        collections::{HashMap, HashSet, hash_map},
+        hash::FixedHasher,
+    },
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
+use bimap::BiHashMap;
 use bytes::BytesMut;
+use chrono::{DateTime, NaiveDateTime};
 use futures::{StreamExt, stream::FuturesUnordered};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use migration::OnConflict;
@@ -99,16 +104,14 @@ impl DownloadHandle {
         cookies: T,
         list: DownloadWay,
         runtimer: &mut TokioTasksRuntime,
-        active_status: Cow<'static, Vec<StatusModel>>,
-        active_downloadrule: Cow<'static, Vec<DownloadruleModel>>,
+        active_status: Arc<HashMap<i64, StatusModel>>,
+        active_downloadrule: Arc<HashMap<i64, DownloadruleModel>>,
+        status_related_downloadrule: Arc<
+            BiHashMap<StatusId, DownloadruleId, FixedHasher, FixedHasher>,
+        >,
     ) -> Self {
         let cookies = cookies.into();
         let task = async move {
-            let media_status_downloadrule = StatusDownloadruleEntity::find()
-                .all(&db.db)
-                .await
-                .unwrap_or_default();
-
             add_cookie_jar(parse_cookies(&cookies));
 
             let bvid = list.0.clone();
@@ -122,10 +125,21 @@ impl DownloadHandle {
                 code: _,
                 data: Some(media),
                 message: _,
+                pubdate,
             }) = media
             else {
                 return media.map(|_| bvid);
             };
+
+            // 时间符合要求的计算
+            let _allow = active_downloadrule.iter().filter(|(_ruleid, model)| {
+                DateTime::from_timestamp(pubdate as i64, 0)
+                    .map(|pubdate| model.default_relation_date(pubdate.naive_utc()))
+                    .unwrap_or_else(|| {
+                        error!("compute media<{}> public date time error,will ignore about time download rule.", bvid);
+                        true
+                    })
+            });
 
             let aid = media.aid;
             let bvid = media.bvid.clone();
@@ -169,7 +183,7 @@ impl DownloadHandle {
                 &Path::new(TEMP_DOWNLOAD_FOLDER),
                 active_status.as_ref(),
                 active_downloadrule.as_ref(),
-                media_status_downloadrule,
+                status_related_downloadrule.as_ref(),
             )
             .await
             .map(|_| bvid);
@@ -323,9 +337,9 @@ pub async fn download(
     media: &Media,
     bars: MultiProgress,
     tmp_path: &Path,
-    active_status: &[StatusModel],
-    _active_downloadrule: &[DownloadruleModel],
-    _media_status_downloadrule: Vec<StatusDownloadruleModel>,
+    active_status: &HashMap<i64, StatusModel>,
+    _active_downloadrule: &HashMap<i64, DownloadruleModel>,
+    _status_related_downloadrule: &BiHashMap<StatusId, DownloadruleId, FixedHasher, FixedHasher>,
 ) -> Result<(), DownloadFileError> {
     if !Path::new(tmp_path).exists() {
         let _ = fs::create_dir_all(tmp_path)?;
@@ -345,7 +359,7 @@ pub async fn download(
 
     let folders = active_status
         .iter()
-        .map(|model| Path::new(&model.path).join(&model.name))
+        .map(|(_, model)| Path::new(&model.path).join(&model.name))
         .filter(|path| path.is_dir() || (!path.exists() && fs::create_dir_all(path).is_ok()))
         .collect::<Vec<_>>();
 
@@ -618,9 +632,10 @@ pub async fn download(
         .collect::<Vec<_>>();
 
     for (_index, file) in file_penddings {
-        let TempFilePendding { name, r#type, tmp } = file;
+        let r#type = file.r#type;
+        let name = file.name.clone();
 
-        let reopon = match tmp.reopen() {
+        let reopon = match file.to_reopon() {
             Ok(result) => result,
             Err(err) => {
                 error!("tmp<{}> into reopon error:{:?}", name, err);
@@ -628,47 +643,22 @@ pub async fn download(
             }
         };
 
-        let reopon = TempFileReopen { name, tmp: reopon };
-
-        match r#type {
-            MediaFileType::Infomation => {
-                for path in path.iter() {
-                    let reopon = match reopon.try_clone() {
-                        Ok(result) => result,
-                        Err(err) => {
-                            error!("tmp<{}> reopon try clone error:{:?}", reopon.name, err);
-                            continue;
-                        }
-                    };
-
-                    match tmptofolder.0.entry(path.clone()) {
-                        hash_map::Entry::Occupied(occupied) => {
-                            occupied.into_mut().insert(reopon);
-                        }
-                        hash_map::Entry::Vacant(vacant) => {
-                            vacant.insert(HashSet::from_iter([reopon]));
-                        }
-                    }
+        for path in path.iter() {
+            let reopon = match reopon.try_clone() {
+                Ok(result) => result,
+                Err(err) => {
+                    error!("tmp<{}> reopon try clone error:{:?}", reopon.name, err);
+                    continue;
                 }
-            }
-            MediaFileType::Stream(id) => {
-                for path in path.iter().map(|up_cid| up_cid.join(id.to_string())) {
-                    let reopon = match reopon.try_clone() {
-                        Ok(result) => result,
-                        Err(err) => {
-                            error!("tmp<{}> reopon try clone error:{:?}", reopon.name, err);
-                            continue;
-                        }
-                    };
+            };
 
-                    match tmptofolder.0.entry(path) {
-                        hash_map::Entry::Occupied(occupied) => {
-                            occupied.into_mut().insert(reopon);
-                        }
-                        hash_map::Entry::Vacant(vacant) => {
-                            vacant.insert(HashSet::from_iter([reopon]));
-                        }
-                    }
+            match r#type {
+                MediaFileType::Infomation => {
+                    tmptofolder.add(path, reopon);
+                }
+                MediaFileType::Stream(id) => {
+                    let path = path.join(id.to_string());
+                    tmptofolder.add(path, reopon);
                 }
             }
         }
@@ -729,7 +719,7 @@ impl TempFilePendding {
 
         // 2. 打开一个独立的文件句柄（克隆），避免影响原句柄
         let mut file = self.tmp.as_file().try_clone()?;
-        
+
         file.seek(SeekFrom::Start(0))?;
 
         let mut v_context = md5::Context::new();
@@ -748,32 +738,39 @@ impl TempFilePendding {
 
         Ok((size, hex_video))
     }
+
+    pub fn to_reopon(self) -> Result<TempFileReopen, io::Error> {
+        let reopon = self.tmp.reopen()?;
+        Ok(TempFileReopen {
+            name: self.name,
+            file: reopon,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub struct TempFileReopen {
     pub name: Cow<'static, str>,
-    /// PartialEq, Eq, Hash will ignore this,
-    pub tmp: File,
+    pub file: File,
 }
 
 impl TempFileReopen {
     pub fn new<T: Into<Cow<'static, str>>>(name: T, tmp: File) -> Self {
         Self {
             name: name.into(),
-            tmp,
+            file: tmp,
         }
     }
 
     pub fn try_clone(&self) -> Result<Self, io::Error> {
         Ok(Self {
             name: self.name.clone(),
-            tmp: self.tmp.try_clone()?,
+            file: self.file.try_clone()?,
         })
     }
 
     pub fn get_size_md5(&self) -> Result<(u64, String), io::Error> {
-        let mut file = self.tmp.try_clone()?;
+        let mut file = self.file.try_clone()?;
 
         let size = file.metadata()?.len();
 
@@ -795,7 +792,7 @@ impl TempFileReopen {
     }
 
     pub fn size(&self) -> Result<u64> {
-        let meta = self.tmp.metadata()?;
+        let meta = self.file.metadata()?;
         Ok(meta.len())
     }
 }
@@ -818,6 +815,28 @@ pub struct FilesIntoFolders(pub HashMap<PathBuf, HashSet<TempFileReopen>>);
 impl FilesIntoFolders {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn add<P: Into<PathBuf>, T: Into<TempFileReopen>>(
+        &mut self,
+        folder: P,
+        file: T,
+    ) -> &mut Self {
+        match self.entry(folder.into()) {
+            hash_map::Entry::Occupied(mut occupied) => {
+                let file = file.into();
+
+                let name = file.name.clone();
+                if occupied.get_mut().insert(file) {
+                    warn!("temp file to name has replace:{:?}", name);
+                }
+            }
+            hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(HashSet::from_iter([file.into()]));
+            }
+        }
+
+        self
     }
 
     pub fn add_path_and_files<
@@ -870,7 +889,7 @@ impl FilesIntoFolders {
             let mut to_vec = Vec::from_iter(tempfiles);
 
             for file_name in to_vec.iter_mut() {
-                if let Err(e) = file_name.tmp.seek(io::SeekFrom::Start(0)) {
+                if let Err(e) = file_name.file.seek(io::SeekFrom::Start(0)) {
                     error!("Failed to seek file {:?} to start: {}", file_name.name, e);
                     continue;
                 }
@@ -890,7 +909,7 @@ impl FilesIntoFolders {
                     }
                 };
 
-                match io::copy(&mut file_name.tmp, &mut target_file) {
+                match io::copy(&mut file_name.file, &mut target_file) {
                     Ok(_bytes) => {
                         // info!("Copied {} bytes to {:?}", bytes, target_path);
                         ()

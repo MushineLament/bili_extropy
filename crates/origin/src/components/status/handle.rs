@@ -1,10 +1,12 @@
-use std::borrow::Cow;
+use std::sync::Arc;
 
 use bevy::{
     ecs::{component::Component, resource::Resource},
+    platform::{collections::HashMap, hash::FixedHasher},
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
+use bimap::BiHashMap;
 use migration::OnConflict;
 use sea_orm::{ActiveValue, EntityTrait as _};
 use strum::{Display, EnumString};
@@ -26,7 +28,7 @@ pub enum StatusState {
 }
 
 #[derive(Debug, Resource, Deref, DerefMut, Default, Clone)]
-pub struct ActiveStatus(pub Cow<'static, Vec<StatusModel>>);
+pub struct ActiveStatus(pub Arc<HashMap<i64, StatusModel>>);
 
 #[derive(Debug, Component, Deref, DerefMut)]
 pub struct LoadStatusTask(pub ECSHandleResult<Vec<status::StatusModel>, anyhow::Error>);
@@ -35,6 +37,32 @@ impl LoadStatusTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
             let medias = status::StatusEntity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+pub type StatusId = i64;
+pub type DownloadruleId = i64;
+
+/// 还未投入使用
+#[derive(Debug, Resource, Deref, DerefMut, Default, Clone)]
+pub struct StatusRelatedDownloadrule(
+    pub Arc<BiHashMap<StatusId, DownloadruleId, FixedHasher, FixedHasher>>,
+);
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct LoadStatusRelatedDownloadruleTask(
+    pub ECSHandleResult<Vec<StatusDownloadruleModel>, anyhow::Error>,
+);
+
+impl LoadStatusRelatedDownloadruleTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = status_downloadrule::Entity::find().all(&db.db).await?;
+
             Ok(medias)
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);
@@ -77,11 +105,11 @@ impl StatusInsertTask {
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct StatusRelatedDownloadruleTask(
+pub struct InsertStatusRelatedDownloadruleTask(
     pub ECSHandleResult<StatusDownloadruleModel, anyhow::Error>,
 );
 
-impl StatusRelatedDownloadruleTask {
+impl InsertStatusRelatedDownloadruleTask {
     pub fn new(
         db: Db,
         runtimer: &mut TokioTasksRuntime,

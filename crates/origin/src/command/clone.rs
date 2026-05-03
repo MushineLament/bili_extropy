@@ -16,7 +16,7 @@ use crate::{
     components::{
         auth::handle::ActiveAccounts,
         download::{DownloadHandle, DownloadList, DownloadWay},
-        status::handle::ActiveStatus,
+        status::handle::{ActiveStatus, StatusRelatedDownloadrule},
     },
     console::ConsoleTrims,
     db::Db,
@@ -71,6 +71,7 @@ pub fn spawn_download_task(
     query_handle: Query<&DownloadHandle>,
     active_status: ResMut<ActiveStatus>,
     active_downloadrule: ResMut<ActiveDownloadrule>,
+    status_related_downloadrule: ResMut<StatusRelatedDownloadrule>,
 ) {
     if lists.is_empty() {
         return;
@@ -109,6 +110,7 @@ pub fn spawn_download_task(
             runtimer.as_mut(),
             active_status.0.clone(),
             active_downloadrule.0.clone(),
+            status_related_downloadrule.0.clone(),
         ));
     }
 }

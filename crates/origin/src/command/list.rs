@@ -17,7 +17,7 @@ use crate::{
         list::handle::{
             ListAccountCollectionsTask, ListAccountFollwedTask, ListAccountTask,
             ListCollectionMediasTask, ListCollectionTask, ListDownloadruleTask, ListMediasTask,
-            ListStatusDownloadRuleTask, ListStatusTask, ListUppersTask,
+            ListStatusRelatedDownloadruleTask, ListStatusTask, ListUppersTask,
         },
     },
     console::ConsoleTrims,
@@ -80,7 +80,7 @@ impl Plugin for CommandListPlugin {
                     list_collection_medias_task,
                     list_medias,
                     list_download_rule_task,
-                    list_status_download_rule_task,
+                    list_status_related_downloadrule_task,
                     list_status_task,
                 )
                     .after(spawn_list_task),
@@ -153,7 +153,7 @@ pub fn spawn_list_task(
 
             Some("status") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
                 Some("downloadrule") => {
-                    commands.spawn(ListStatusDownloadRuleTask::new(
+                    commands.spawn(ListStatusRelatedDownloadruleTask::new(
                         db.clone(),
                         runtimer.as_mut(),
                     ));
@@ -167,7 +167,7 @@ pub fn spawn_list_task(
             },
             Some("downloadrule") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
                 Some("status") => {
-                    commands.spawn(ListStatusDownloadRuleTask::new(
+                    commands.spawn(ListStatusRelatedDownloadruleTask::new(
                         db.clone(),
                         runtimer.as_mut(),
                     ));
@@ -320,9 +320,9 @@ pub fn list_download_rule_task(
     }
 }
 
-pub fn list_status_download_rule_task(
+pub fn list_status_related_downloadrule_task(
     mut commands: Commands,
-    query: Query<(&mut ListStatusDownloadRuleTask, Entity)>,
+    query: Query<(&mut ListStatusRelatedDownloadruleTask, Entity)>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {

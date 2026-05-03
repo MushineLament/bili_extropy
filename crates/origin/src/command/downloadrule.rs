@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::sync::Arc;
 
 use bevy::{
     app::{Plugin, PostStartup, Update},
@@ -10,6 +10,7 @@ use bevy::{
         schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
     },
+    platform::collections::HashMap,
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
@@ -166,7 +167,7 @@ impl DownloadRuleInsertTask {
 }
 
 #[derive(Debug, Resource, Deref, DerefMut, Default, Clone)]
-pub struct ActiveDownloadrule(pub Cow<'static, Vec<DownloadruleModel>>);
+pub struct ActiveDownloadrule(pub Arc<HashMap<i64, DownloadruleModel>>);
 
 #[derive(Debug, Component, Deref, DerefMut)]
 pub struct LoadDownloadruleTask(
@@ -197,12 +198,12 @@ pub fn active_downloadrule(
             continue;
         };
 
-        res.0 = Cow::Owned(
+        res.0 = Arc::new(
             result
                 .iter()
                 .filter(|status| status.state == StatusState::Active.to_string())
-                .map(|model| model.clone())
-                .collect::<Vec<_>>(),
+                .map(|model| (model.id, model.clone()))
+                .collect::<HashMap<_, _>>(),
         );
     }
 }

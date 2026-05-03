@@ -1,12 +1,12 @@
-use std::borrow::Cow;
+use std::sync::Arc;
 
 use bevy::{
-    app::{Plugin, PostStartup, Update},
+    app::{Plugin, PostStartup, PreUpdate, Update},
     ecs::{
         message::MessageReader,
-        schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
     },
+    platform::collections::HashMap,
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
 use sea_orm::ActiveValue;
@@ -17,8 +17,8 @@ use crate::{
         initialize::DbInitailizeComponent as _,
         list::handle::ListStatusTask,
         status::handle::{
-            ActiveStatus, LoadStatusTask, StatusInsertTask, StatusRelatedDownloadruleTask,
-            StatusState,
+            ActiveStatus, InsertStatusRelatedDownloadruleTask, LoadStatusRelatedDownloadruleTask,
+            LoadStatusTask, StatusInsertTask, StatusRelatedDownloadrule, StatusState,
         },
     },
     console::ConsoleTrims,
@@ -55,10 +55,18 @@ pub struct CommandStatusPlugin;
 impl Plugin for CommandStatusPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.init_resource::<ActiveStatus>()
-            .add_systems(PostStartup, LoadStatusTask::new.to_system())
+            .init_resource::<StatusRelatedDownloadrule>()
+            .add_systems(
+                PostStartup,
+                (
+                    LoadStatusTask::new.to_system(),
+                    LoadStatusRelatedDownloadruleTask::new.to_system(),
+                ),
+            )
+            .add_systems(PreUpdate, spawn_status_task)
             .add_systems(
                 Update,
-                (spawn_status_task, (active_status).after(spawn_status_task)),
+                (active_status, load_status_related_downloadrule_task),
             );
     }
 }
@@ -123,7 +131,7 @@ pub fn spawn_status_task(
                             .iter()
                             .filter_map(|rule_id| rule_id.parse::<i64>().ok())
                             .map(|rule_id| {
-                                StatusRelatedDownloadruleTask::new(
+                                InsertStatusRelatedDownloadruleTask::new(
                                     db.clone(),
                                     runtimer.as_mut(),
                                     id.clone(),
@@ -156,12 +164,30 @@ pub fn active_status(mut res: ResMut<ActiveStatus>, query: Query<&mut LoadStatus
             continue;
         };
 
-        res.0 = Cow::Owned(
+        res.0 = Arc::new(
             result
                 .iter()
                 .filter(|status| status.state == StatusState::Active.to_string())
-                .map(|model| model.clone())
-                .collect::<Vec<_>>(),
+                .map(|model| (model.id, model.clone()))
+                .collect::<HashMap<_, _>>(),
+        );
+    }
+}
+
+pub fn load_status_related_downloadrule_task(
+    mut res: ResMut<StatusRelatedDownloadrule>,
+    query: Query<&mut LoadStatusRelatedDownloadruleTask>,
+) {
+    for mut task in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+
+        res.0 = Arc::new(
+            result
+                .iter()
+                .map(|model| (model.status_id, model.rule_id))
+                .collect(),
         );
     }
 }

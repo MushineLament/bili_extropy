@@ -109,6 +109,8 @@ pub struct MediaInfoSingle {
     pub code: i64,
     pub data: Option<Media>,
     pub message: Option<String>,
+    /// 视频公开时间
+    pub pubdate: u64,
 }
 
 #[derive(Debug, Deserialize)]

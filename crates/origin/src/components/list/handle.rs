@@ -6,15 +6,18 @@ use bevy_tokio_tasks::TokioTasksRuntime;
 use sea_orm::EntityTrait as _;
 
 use crate::{
-    command::downloadrule::LoadDownloadruleTask,
-    components::{handle::ECSHandleResult, status::handle::LoadStatusTask},
+    components::{
+        handle::ECSHandleResult,
+        status::handle::{LoadStatusRelatedDownloadruleTask, LoadStatusTask},
+    },
     db::Db,
     entity::{
         account::{self, AccountModel},
         account_collection::{self, AccountCollectionModel},
         collection::{self, CollectionModel},
         collection_media, downloadrule,
-        media::{self, MediaModel}, upper, upper_account,
+        media::{self, MediaModel},
+        upper, upper_account,
     },
 };
 
@@ -141,11 +144,11 @@ impl ListDownloadruleTask {
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListStatusDownloadRuleTask(pub LoadDownloadruleTask);
+pub struct ListStatusRelatedDownloadruleTask(pub LoadStatusRelatedDownloadruleTask);
 
-impl ListStatusDownloadRuleTask {
+impl ListStatusRelatedDownloadruleTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadDownloadruleTask::new(db, runtimer))
+        Self(LoadStatusRelatedDownloadruleTask::new(db, runtimer))
     }
 }
 

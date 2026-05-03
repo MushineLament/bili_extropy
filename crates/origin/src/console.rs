@@ -2,11 +2,12 @@ use std::borrow::Cow;
 
 use anyhow::Result;
 use bevy::{
-    app::{AppExit, Plugin, PreUpdate, Startup},
+    app::{AppExit, MainScheduleOrder, Plugin, PreUpdate, Startup},
     ecs::{
         change_detection::MaybeLocation,
         message::Message,
         resource::Resource,
+        schedule::ScheduleLabel,
         system::{Commands, ResMut},
     },
     platform::collections::HashMap,
@@ -248,13 +249,20 @@ pub enum ConsoleCommand {
     Exit,
 }
 
+#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub struct ConsoleOutput;
+
 pub struct ConsolePlugin;
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut bevy::app::App) {
+        app.world_mut()
+            .resource_mut::<MainScheduleOrder>()
+            .insert_before(PreUpdate, ConsoleOutput);
+
         app.add_message::<ConsoleTrims>()
             .add_systems(Startup, console_initalize)
-            .add_systems(PreUpdate, console_task_repeat);
+            .add_systems(ConsoleOutput, console_task_repeat);
     }
 }
 

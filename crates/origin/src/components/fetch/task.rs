@@ -134,9 +134,7 @@ impl FetchMediaData {
         caller: MaybeLocation,
     ) -> Result<(DownloadWay, u64), anyhow::Error> {
         let Ok(MediaInfoSingle {
-            code: _,
-            data: Some(media),
-            message: _,
+            data: Some(media), ..
         }) = id
             .clone()
             .response()

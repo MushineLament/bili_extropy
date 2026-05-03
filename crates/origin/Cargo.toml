@@ -63,3 +63,4 @@ argmap = "1.1.2"
 strum = { version = "0.28.0", features = ["derive"] }
 chrono = "0.4.44"
 bytes = "1.11.1"
+bimap = "0.6.3"
