@@ -2,10 +2,13 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     hash::Hash,
-    io::{self, ErrorKind, Seek as _, Write as _},
+    io::{self, ErrorKind, Seek as _, SeekFrom, Write as _},
     mem,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 use crate::{
@@ -406,9 +409,11 @@ pub async fn download(
 
     let mut tmptofolder = FilesIntoFolders::new();
 
-    let mut response_files = vec![];
+    let mut response_files = HashMap::new();
 
-    response_files.push(response_icon);
+    let file_index_id = AtomicUsize::new(0);
+
+    response_files.insert(file_index_id.fetch_add(1, Ordering::Relaxed), response_icon);
 
     let mut index_files = vec![];
 
@@ -466,8 +471,9 @@ pub async fn download(
         )
         .await
         {
-            response_files.push(file_video?);
-            Some(response_files.len())
+            let id = file_index_id.fetch_add(1, Ordering::Relaxed);
+            response_files.insert(id, file_video?);
+            Some(id)
         } else {
             None
         };
@@ -483,8 +489,9 @@ pub async fn download(
         )
         .await
         {
-            response_files.push(file_audio?);
-            Some(response_files.len())
+            let id = file_index_id.fetch_add(1, Ordering::Relaxed);
+            response_files.insert(id, file_audio?);
+            Some(id)
         } else {
             None
         };
@@ -503,11 +510,14 @@ pub async fn download(
         .into_response()
         .await
         {
-            response_files.push(file_danmu);
+            response_files.insert(file_index_id.fetch_add(1, Ordering::Relaxed), file_danmu);
         };
 
         if let Ok(file_danmu_xml) = DownloadHandle::danmu_xml(tmp_path, media.cid).await {
-            response_files.push(file_danmu_xml);
+            response_files.insert(
+                file_index_id.fetch_add(1, Ordering::Relaxed),
+                file_danmu_xml,
+            );
         };
 
         let _file_entry = {
@@ -526,16 +536,16 @@ pub async fn download(
 
     let mut tasks = FuturesUnordered::new();
 
-    for file in response_files {
-        tasks.push(async move { file.download().await });
+    for (index, file) in response_files {
+        tasks.push(async move { (index, file.download().await) });
     }
 
-    let mut file_penddings = vec![];
+    let mut file_penddings = HashMap::new();
 
-    while let Some(result) = tasks.next().await {
+    while let Some((index, result)) = tasks.next().await {
         match result {
             Ok(file) => {
-                file_penddings.push(file.tmp);
+                file_penddings.insert(index, file.tmp);
             }
             Err(err) => {
                 error!("download file error:{:?}", err);
@@ -553,12 +563,12 @@ pub async fn download(
         let entry_writer = io::BufWriter::new(&file_entry.tmp);
         serde_json::to_writer_pretty(entry_writer, &file_entry_json)?; // 使用 pretty 格式化输出;
 
-        file_penddings.push(file_entry);
+        file_penddings.insert(file_index_id.fetch_add(1, Ordering::Relaxed), file_entry);
     };
 
     for (audio_index, mut index_audio, video_index, mut index_video) in index_files {
         if let Some(audio) = audio_index
-            && let Some(file_audio) = file_penddings.get(audio)
+            && let Some(file_audio) = file_penddings.get(&audio)
         {
             let (size, md5) = file_audio
                 .get_size_md5()
@@ -570,7 +580,7 @@ pub async fn download(
         }
 
         if let Some(video) = video_index
-            && let Some(file_video) = file_penddings.get(video)
+            && let Some(file_video) = file_penddings.get(&video)
         {
             let (size, md5) = file_video
                 .get_size_md5()
@@ -597,7 +607,7 @@ pub async fn download(
 
             serde_json::to_writer_pretty(index_writer, &index)?; // 使用 pretty 格式化输出;
 
-            file_penddings.push(file_index);
+            file_penddings.insert(file_index_id.fetch_add(1, Ordering::Relaxed), file_index);
         }
     };
 
@@ -607,7 +617,7 @@ pub async fn download(
         .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string())))
         .collect::<Vec<_>>();
 
-    for file in file_penddings {
+    for (_index, file) in file_penddings {
         let TempFilePendding { name, r#type, tmp } = file;
 
         let reopon = match tmp.reopen() {
@@ -713,9 +723,14 @@ impl TempFilePendding {
     }
 
     pub fn get_size_md5(&self) -> Result<(u64, String), io::Error> {
-        let mut file = self.as_file();
+        let file = self.as_file();
 
         let size = file.metadata()?.len();
+
+        // 2. 打开一个独立的文件句柄（克隆），避免影响原句柄
+        let mut file = self.tmp.as_file().try_clone()?;
+        
+        file.seek(SeekFrom::Start(0))?;
 
         let mut v_context = md5::Context::new();
         let mut v_buffer = [0; 8192];
