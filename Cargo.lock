@@ -4021,6 +4021,7 @@ dependencies = [
  "argmap",
  "bevy",
  "bevy-tokio-tasks",
+ "bytes",
  "chrono",
  "const_format",
  "cookie",

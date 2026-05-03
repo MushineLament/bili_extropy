@@ -9,8 +9,6 @@ mod midtable;
 pub use midtable::*;
 
 mod detailtable;
-pub use detailtable::*;
-
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;

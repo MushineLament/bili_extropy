@@ -14,8 +14,7 @@ use crate::{
         account_collection::{self, AccountCollectionModel},
         collection::{self, CollectionModel},
         collection_media, downloadrule,
-        media::{self, MediaModel},
-        status, status_downloadrule, upper, upper_account,
+        media::{self, MediaModel}, upper, upper_account,
     },
 };
 

@@ -36,10 +36,6 @@ pub struct Model {
     pub pic: Option<Url>,
 }
 
-fn default_state() -> String {
-    "normal".to_string()
-}
-
 // 关系定义 - 使用具体结构体名称
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {

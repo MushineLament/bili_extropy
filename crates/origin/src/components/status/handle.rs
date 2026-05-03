@@ -6,7 +6,7 @@ use bevy::{
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
 use migration::OnConflict;
-use sea_orm::{ActiveValue, EntityTrait as _, IntoActiveModel};
+use sea_orm::{ActiveValue, EntityTrait as _};
 use strum::{Display, EnumString};
 
 use crate::{

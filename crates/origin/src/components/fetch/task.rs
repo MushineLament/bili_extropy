@@ -38,7 +38,6 @@ use crate::{
         FollowingNumPayload, FollowingUpPayload, InSetPayload, InUpPayload,
         ListUpperCollectPayload, PublishNumPayload,
     },
-    state::{CollectionState, MediaState, UpState},
 };
 
 /// 获取upperid下的所有mediacid
