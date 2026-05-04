@@ -18,3 +18,6 @@ pub use status_collection::*;
 
 mod status_downloadrule;
 pub use status_downloadrule::*;
+
+mod downloadtask_medias;
+pub use downloadtask_medias::*;

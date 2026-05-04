@@ -1,9 +1,8 @@
 use bevy::{
-    app::{Plugin, Update},
+    app::{Plugin, PreUpdate, Update},
     ecs::{
         entity::Entity,
         message::MessageReader,
-        schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
     },
 };
@@ -16,8 +15,9 @@ use crate::{
         download::DownloadHandle,
         list::handle::{
             ListAccountCollectionsTask, ListAccountFollwedTask, ListAccountTask,
-            ListCollectionMediasTask, ListCollectionTask, ListDownloadruleTask, ListMediasTask,
-            ListStatusRelatedDownloadruleTask, ListStatusTask, ListUppersTask,
+            ListCollectionMediasTask, ListCollectionTask, ListDownloadruleTask,
+            ListDownloadtaskTask, ListMediasTask, ListStatusRelatedDownloadruleTask,
+            ListStatusTask, ListUppersTask,
         },
     },
     console::ConsoleTrims,
@@ -67,23 +67,20 @@ pub struct CommandListPlugin;
 
 impl Plugin for CommandListPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(
+        app.add_systems(PreUpdate, spawn_list_task).add_systems(
             Update,
             (
-                spawn_list_task,
-                (
-                    list_account_task,
-                    list_collection_task,
-                    list_account_collections_task,
-                    list_account_follwed_task,
-                    list_uppers_task,
-                    list_collection_medias_task,
-                    list_medias,
-                    list_download_rule_task,
-                    list_status_related_downloadrule_task,
-                    list_status_task,
-                )
-                    .after(spawn_list_task),
+                list_account_task,
+                list_collection_task,
+                list_account_collections_task,
+                list_account_follwed_task,
+                list_uppers_task,
+                list_collection_medias_task,
+                list_medias,
+                list_download_rule_task,
+                list_status_related_downloadrule_task,
+                list_status_task,
+                list_downloadtask_task,
             ),
         );
     }
@@ -177,6 +174,15 @@ pub fn spawn_list_task(
                 }
                 None => {
                     commands.spawn(ListDownloadruleTask::new(db.clone(), runtimer.as_mut()));
+                }
+            },
+
+            Some("downloadtask") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {
+                    commands.spawn(ListDownloadtaskTask::new(db.clone(), runtimer.as_mut()));
                 }
             },
 
@@ -345,6 +351,23 @@ pub fn list_status_task(mut commands: Commands, query: Query<(&mut ListStatusTas
         let table = result
             .iter()
             .table_head(["id", "folder name", "path", "state"]);
+        info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_downloadtask_task(
+    mut commands: Commands,
+    query: Query<(&mut ListDownloadtaskTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        let table = result
+            .iter()
+            .table_head(["id", "type", "related id", "state"]);
         info!("\n{}\nrows: {}", table, table.count_rows() - 1);
     }
 }

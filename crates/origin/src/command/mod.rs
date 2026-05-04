@@ -1,13 +1,14 @@
 use bevy::app::Plugin;
 
 use crate::command::{
-    auth::CommmandLoginPlugin, downloadrule::CommandDownloadRulePlugin, fetch::CommandFetchPlugin,
+    auth::CommmandLoginPlugin, downloadrule::CommandDownloadrulePlugin, fetch::CommandFetchPlugin,
     help::CommandHelpPlugin, list::CommandListPlugin, status::CommandStatusPlugin,
 };
 
 pub mod auth;
 pub mod clone;
 pub mod downloadrule;
+pub mod downloadtask;
 pub mod fetch;
 pub mod help;
 pub mod list;
@@ -24,6 +25,6 @@ impl Plugin for CommandPlugin {
             .add_plugins(CommandFetchPlugin)
             .add_plugins(CommandStatusPlugin)
             .add_plugins(CommandHelpPlugin)
-            .add_plugins(CommandDownloadRulePlugin);
+            .add_plugins(CommandDownloadrulePlugin);
     }
 }

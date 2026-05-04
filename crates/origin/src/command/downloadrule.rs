@@ -60,9 +60,9 @@ Example:
 
 pub const DOWNLOAD_RULE_COMMAND_INDEX: usize = 2;
 
-pub struct CommandDownloadRulePlugin;
+pub struct CommandDownloadrulePlugin;
 
-impl Plugin for CommandDownloadRulePlugin {
+impl Plugin for CommandDownloadrulePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.init_resource::<ActiveDownloadrule>()
             .add_systems(PostStartup, LoadDownloadruleTask::new.to_system())

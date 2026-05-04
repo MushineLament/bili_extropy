@@ -43,7 +43,7 @@ use bevy::{
 use bevy_tokio_tasks::TokioTasksRuntime;
 use bimap::BiHashMap;
 use bytes::BytesMut;
-use chrono::{DateTime, NaiveDateTime};
+use chrono::DateTime;
 use futures::{StreamExt, stream::FuturesUnordered};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use migration::OnConflict;

@@ -1,21 +1,27 @@
 use sea_orm_migration::{prelude::*, schema::*};
 
 #[derive(DeriveIden)]
-pub enum DownloadTask {
+pub enum Downloadtask {
     Table,
+    Id,
     TypeId,
     GenericId,
     State,
 }
 
-impl DownloadTask {
+impl Downloadtask {
     pub fn create_table() -> TableCreateStatement {
         Table::create()
-            .table(DownloadTask::Table)
+            .table(Downloadtask::Table)
             .if_not_exists()
             .col(
+                big_unsigned(Downloadtask::Id)
+                    .auto_increment()
+                    .primary_key(),
+            )
+            .col(
                 enumeration(
-                    DownloadTask::State,
+                    Downloadtask::State,
                     "state",
                     [
                         "Pending",
@@ -29,13 +35,8 @@ impl DownloadTask {
                 )
                 .default("Pending"),
             )
-            .col(tiny_unsigned(DownloadTask::TypeId).not_null())
-            .col(big_unsigned_uniq(DownloadTask::GenericId).not_null())
-            .primary_key(
-                Index::create()
-                    .col(DownloadTask::TypeId)
-                    .col(DownloadTask::GenericId),
-            )
+            .col(tiny_unsigned(Downloadtask::TypeId).not_null())
+            .col(big_unsigned(Downloadtask::GenericId).not_null())
             .to_owned()
     }
 }

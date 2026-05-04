@@ -3,6 +3,7 @@ pub mod account_collection;
 pub mod collection;
 pub mod collection_media;
 pub mod downloadrule;
+pub mod downloadtask;
 pub mod media;
 pub mod status;
 pub mod status_downloadrule;

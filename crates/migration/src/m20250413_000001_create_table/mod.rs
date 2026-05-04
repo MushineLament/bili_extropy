@@ -8,8 +8,6 @@ pub use table::*;
 mod midtable;
 pub use midtable::*;
 
-mod detailtable;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -23,7 +21,7 @@ impl MigrationTrait for Migration {
         manager.create_table(Upper::create_table()).await?;
         manager.create_table(Collection::create_table()).await?;
         manager.create_table(Downloadrule::create_table()).await?;
-        manager.create_table(DownloadTask::create_table()).await?;
+        manager.create_table(Downloadtask::create_table()).await?;
 
         // 2. 中间表（依赖基表）
         manager.create_table(StatusMedia::create_table()).await?;
@@ -40,6 +38,9 @@ impl MigrationTrait for Migration {
         manager.create_table(UpperAccount::create_table()).await?;
         manager
             .create_table(StatusDownloadrule::create_table())
+            .await?;
+        manager
+            .create_table(DownloadtaskMedias::create_table())
             .await?;
         Ok(())
     }
@@ -70,6 +71,10 @@ impl MigrationTrait for Migration {
             .drop_table(Table::drop().table(StatusDownloadrule::Table).to_owned())
             .await?;
 
+        manager
+            .drop_table(Table::drop().table(DownloadtaskMedias::Table).to_owned())
+            .await?;
+
         // 再删除基表
         manager
             .drop_table(Table::drop().table(Media::Table).to_owned())
@@ -88,7 +93,7 @@ impl MigrationTrait for Migration {
             .await?;
 
         manager
-            .drop_table(Table::drop().table(DownloadTask::Table).to_owned())
+            .drop_table(Table::drop().table(Downloadtask::Table).to_owned())
             .await?;
 
         Ok(())

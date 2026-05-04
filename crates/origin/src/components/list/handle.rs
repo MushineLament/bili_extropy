@@ -16,6 +16,7 @@ use crate::{
         account_collection::{self, AccountCollectionModel},
         collection::{self, CollectionModel},
         collection_media, downloadrule,
+        downloadtask::{self},
         media::{self, MediaModel},
         upper, upper_account,
     },
@@ -136,6 +137,22 @@ impl ListDownloadruleTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
             let medias = downloadrule::DownloadruleEntity::find().all(&db.db).await?;
+            Ok(medias)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListDownloadtaskTask(
+    pub ECSHandleResult<Vec<downloadtask::DownloadtaskModel>, anyhow::Error>,
+);
+
+impl ListDownloadtaskTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let medias = downloadtask::DownloadtaskEntity::find().all(&db.db).await?;
             Ok(medias)
         };
         let handle = runtimer.spawn_background_task(|_ctx| task);
