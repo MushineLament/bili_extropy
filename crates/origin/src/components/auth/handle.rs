@@ -8,12 +8,12 @@ use bevy::{
 use bevy_tokio_tasks::TokioTasksRuntime;
 use migration::OnConflict;
 use qrcode::{QrCode, render::unicode};
-use sea_orm::{ColumnTrait as _, EntityTrait, IntoActiveModel as _, QueryFilter as _};
+use sea_orm::{ColumnTrait as _, EntityTrait, IntoActiveModel as _, QueryFilter as _, Select};
 use tracing::{error, info};
 
 use crate::{
     api::{AuthApi, BiliApi},
-    components::handle::ECSHandleResult,
+    components::{fetch::handle::Loadable, handle::ECSHandleResult},
     cookies::current_cookies,
     db::Db,
     entity::{
@@ -103,16 +103,32 @@ impl AuthLoginTask {
 }
 
 #[derive(Debug, Resource, Deref, DerefMut)]
-pub struct ActiveAccounts(pub ECSHandleResult<Vec<AccountModel>, anyhow::Error>);
+pub struct ActiveAccounts(pub LoadAccountsTask);
 
 impl ActiveAccounts {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move {
-            let accounts = account::AccountEntity::find()
-                .filter(account::Column::State.eq(AccountState::Active))
-                .all(&db.db)
-                .await?;
+        Self(LoadAccountsTask::new_with(db, runtimer, |select| {
+            select.filter(account::Column::State.eq(AccountState::Active))
+        }))
+    }
 
+    pub fn ids_mut(&mut self) -> Vec<i64> {
+        self.try_result()
+            .iter()
+            .map(|result| result.iter())
+            .flatten()
+            .map(|account| account.account_id)
+            .collect::<Vec<_>>()
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct LoadAccountsTask(pub ECSHandleResult<Vec<AccountModel>, anyhow::Error>);
+
+impl LoadAccountsTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move {
+            let accounts = LoadAccountsTask::load(&db).await?;
             Ok(accounts)
         };
 
@@ -123,13 +139,27 @@ impl ActiveAccounts {
         Self(task)
     }
 
-    pub fn ids_mut(&mut self) -> impl IntoIterator<Item = i64> {
-        self.try_result()
-            .ok()
-            .iter()
-            .map(|accounts| accounts.iter())
-            .flatten()
-            .map(|account| account.account_id)
-            .collect::<Vec<_>>()
+    pub fn new_with<F>(db: Db, runtimer: &mut TokioTasksRuntime, func: F) -> Self
+    where
+        F: FnOnce(
+                Select<<LoadAccountsTask as Loadable>::Entity>,
+            ) -> Select<<LoadAccountsTask as Loadable>::Entity>
+            + Send
+            + 'static,
+    {
+        let task = async move {
+            let accounts = LoadAccountsTask::load_with(&db, func).await?;
+            Ok(accounts)
+        };
+
+        let task = runtimer.spawn_background_task(move |_ctx| task);
+
+        let task = ECSHandleResult::new(task);
+
+        Self(task)
     }
+}
+
+impl Loadable for LoadAccountsTask {
+    type Entity = account::AccountEntity;
 }

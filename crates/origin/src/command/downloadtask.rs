@@ -1,26 +1,24 @@
 use bevy::{
-    app::{Plugin, PostStartup, PreUpdate, Update},
+    app::{Plugin, PreUpdate, Update},
     ecs::{
-        component::Component,
         entity::Entity,
         message::MessageReader,
         system::{Commands, Query, Res, ResMut},
     },
-    prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use migration::OnConflict;
-use sea_orm::{ActiveValue, EntityTrait};
+use sea_orm::ActiveValue;
 use tracing::{error, info};
 
 use crate::{
     components::{
-        handle::ECSHandleResult, initialize::DbInitailizeComponent,
-        list::handle::ListDownloadruleTask, status::handle::StatusState,
+        auth::handle::ActiveAccounts,
+        downloadtask::{handle::InsertDownloadtaskTask, load::LoadDownloadtaskTask},
+        list::handle::ListDownloadruleTask,
     },
     console::ConsoleTrims,
     db::Db,
-    entity::downloadtask::{self, DownloadtaskActiveModel},
+    entity::downloadtask::{self},
 };
 
 pub const HELP_DOWNLOAD_TASK: &str = r#"
@@ -59,8 +57,7 @@ pub struct CommandDownloadtaskPlugin;
 
 impl Plugin for CommandDownloadtaskPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(PostStartup, LoadDownloadtaskTask::new.to_system())
-            .add_systems(PreUpdate, spawn_list_task)
+        app.add_systems(PreUpdate, spawn_list_task)
             .add_systems(Update, (download_rule_insert_task,));
     }
 }
@@ -70,27 +67,39 @@ pub fn spawn_list_task(
     db: Res<Db>,
     mut runtimer: ResMut<TokioTasksRuntime>,
     mut console_message: MessageReader<ConsoleTrims>,
+    _active_account: ResMut<ActiveAccounts>,
 ) {
     for message in console_message.read() {
         let _db = db.clone();
-        let ConsoleTrims { args, argv } = message;
+        let ConsoleTrims { args, argv: _ } = message;
 
-        if !args.get(1).is_some_and(|list| list.eq("downloadtask")) {
+        if !args.get(1).is_some_and(|list| list.eq("task")) {
             continue;
         }
 
-        let id = argv
-            .get("id")
-            .map(|id| id.iter())
+        let id = message
+            .ids()
             .into_iter()
-            .flatten()
-            .find_map(|id| id.parse::<i64>().ok())
-            .into_iter()
+            .filter_map(|id| id.parse::<i64>().ok())
             .next()
             .map(|id| ActiveValue::Set(id))
             .unwrap_or(ActiveValue::NotSet);
 
         match args.get(DOWNLOAD_TASK_COMMAND_INDEX).map(String::as_str) {
+            Some("start") => {
+                let db = db.clone();
+                runtimer.spawn_background_task(|_ctx| async move {
+                    let test = LoadDownloadtaskTask::related_all_medias(&db)
+                        .await
+                        .unwrap()
+                        .into_values();
+
+                    for related in test {
+                        info!("related:{:?}", related);
+                    }
+                    info!("打印完毕");
+                });
+            }
             Some("insert") => {
                 let Some(r#type) = args.get(3).map(String::as_str) else {
                     error!("not a type name");
@@ -98,20 +107,29 @@ pub fn spawn_list_task(
                 };
 
                 let Some(Ok(generic_id)) =
-                    args.get(3).map(String::as_str).map(|id| id.parse::<i64>())
+                    args.get(4).map(String::as_str).map(|id| id.parse::<i64>())
                 else {
                     error!("not a number id");
                     continue;
                 };
 
-                commands.spawn(DownloadtaskInsertTask::new(
+                info!("task id:{:?}", id);
+
+                let state = message
+                    .get_first_state()
+                    .map(|first| ActiveValue::Set(first.to_string()))
+                    .unwrap_or(ActiveValue::NotSet);
+
+                info!("state: {:?}", state);
+
+                commands.spawn(InsertDownloadtaskTask::new(
                     db.clone(),
                     runtimer.as_mut(),
                     downloadtask::DownloadtaskActiveModel {
                         id,
                         type_id: ActiveValue::Set(r#type.to_string()),
                         generic_id: ActiveValue::Set(generic_id),
-                        state: ActiveValue::Set(StatusState::Active.to_string()),
+                        state,
                     },
                 ));
             }
@@ -130,57 +148,21 @@ pub fn spawn_list_task(
 
 pub fn download_rule_insert_task(
     mut commands: Commands,
-    query: Query<(&mut DownloadtaskInsertTask, Entity)>,
+    query: Query<(&mut InsertDownloadtaskTask, Entity)>,
 ) {
     for (mut task, entity) in query {
-        let Ok(result) = task.try_result() else {
-            continue;
-        };
+        match task.try_result() {
+            Ok(result) => {
+                info!("insert a task id<{}>", result);
+            }
+            Err(err) => {
+                if !err.is_finished() {
+                    continue;
+                }
+                error!("insert a task error: {:?}", err);
+            }
+        }
+
         commands.entity(entity).despawn();
-
-        info!("insert a task id<{}>", result);
-    }
-}
-
-pub type TaskId = i64;
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct DownloadtaskInsertTask(pub ECSHandleResult<TaskId, anyhow::Error>);
-
-impl DownloadtaskInsertTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime, model: DownloadtaskActiveModel) -> Self {
-        let task = async move {
-            let pri = downloadtask::DownloadtaskEntity::insert(model)
-                .on_conflict(
-                    OnConflict::columns([downloadtask::Column::Id])
-                        .update_columns([
-                            downloadtask::Column::TypeId,
-                            downloadtask::Column::GenericId,
-                        ])
-                        .to_owned(),
-                )
-                .exec_with_returning(&db.db)
-                .await?;
-
-            Ok(pri.id)
-        };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(ECSHandleResult::new(handle))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct LoadDownloadtaskTask(
-    pub ECSHandleResult<Vec<downloadtask::DownloadtaskModel>, anyhow::Error>,
-);
-
-impl LoadDownloadtaskTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move {
-            let medias = downloadtask::DownloadtaskEntity::find().all(&db.db).await?;
-            Ok(medias)
-        };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(ECSHandleResult::new(handle))
     }
 }

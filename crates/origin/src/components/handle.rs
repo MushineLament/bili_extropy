@@ -101,6 +101,10 @@ impl<T, E> ECSHandleInner<T, T, E> {
     }
 
     pub fn try_result(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
+        if !self.is_finished() {
+            return Err(&ECSHandleError::NotFinished);
+        }
+
         let Self {
             handle,
             data,
@@ -111,13 +115,14 @@ impl<T, E> ECSHandleInner<T, T, E> {
             return Ok(data);
         }
 
-        if !handle.is_finished() {
-            return Err(&ECSHandleError::NotFinished);
+        if data
+            .as_ref()
+            .is_err_and(|err| matches!(err, ECSHandleError::NotFinished))
+        {
+            let result =
+                bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
+            *data = result;
         }
-
-        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
-
-        *data = result;
 
         data.as_mut().map_err(|err| &*err)
     }
@@ -157,6 +162,10 @@ impl<T, E> ECSHandleInner<Result<T, E>, T, E> {
     }
 
     pub fn try_result(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
+        if !self.is_finished() {
+            return Err(&ECSHandleError::NotFinished);
+        }
+
         let Self {
             handle,
             data,
@@ -167,13 +176,15 @@ impl<T, E> ECSHandleInner<Result<T, E>, T, E> {
             return Ok(data);
         }
 
-        if !handle.is_finished() {
-            return Err(&ECSHandleError::NotFinished);
+        if data
+            .as_ref()
+            .is_err_and(|err| matches!(err, ECSHandleError::NotFinished))
+        {
+            let result =
+                bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
+
+            *data = result.and_then(|result| result.map_err(|err| ECSHandleError::Error(err)));
         }
-
-        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
-
-        *data = result.and_then(|result| result.map_err(|err| ECSHandleError::Error(err)));
 
         data.as_mut().map_err(|err| &*err)
     }
@@ -235,6 +246,33 @@ mod tests {
 
             assert!(handle.is_finished());
             println!("handle size:{:?}", size_of_val(&handle));
+        });
+
+        runtime.block_on(task).unwrap()
+    }
+
+    #[test]
+    fn try_result_but_has_error() {
+        let runtime = Runtime::new().unwrap();
+
+        let task = runtime.spawn(async {
+            let task = tokio::spawn(async {
+                tokio::time::sleep(Duration::from_secs_f32(1.0)).await;
+                Err(())
+            });
+
+            let mut handle = ECSHandleInner::<Result<(), ()>, (), ()>::new(task);
+
+            assert!(!handle.is_finished());
+
+            let result = handle.block_on();
+
+            assert!(result.is_err());
+
+            let result = handle.try_result();
+            assert!(result.is_err());
+
+            let _result = handle.block_on();
         });
 
         runtime.block_on(task).unwrap()

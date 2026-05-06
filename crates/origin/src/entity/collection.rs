@@ -6,6 +6,8 @@ use sea_orm::entity::prelude::*;
 
 use crate::table::ToTableRecord;
 
+pub const COLLECTION: &str = "Collection";
+
 // ========== 向后兼容别名 ==========
 pub use Entity as CollectionEntity;
 pub use Model as CollectionModel;

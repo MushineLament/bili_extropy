@@ -7,7 +7,9 @@ use sea_orm::EntityTrait as _;
 
 use crate::{
     components::{
+        downloadtask::load::LoadDownloadtaskTask,
         handle::ECSHandleResult,
+        list::load::LoadMediasTask,
         status::handle::{LoadStatusRelatedDownloadruleTask, LoadStatusTask},
     },
     db::Db,
@@ -15,24 +17,16 @@ use crate::{
         account::{self, AccountModel},
         account_collection::{self, AccountCollectionModel},
         collection::{self, CollectionModel},
-        collection_media, downloadrule,
-        downloadtask::{self},
-        media::{self, MediaModel},
-        upper, upper_account,
+        collection_media, downloadrule, upper, upper_account,
     },
 };
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListMediasTask(pub ECSHandleResult<Vec<MediaModel>, anyhow::Error>);
+pub struct ListMediasTask(pub LoadMediasTask);
 
 impl ListMediasTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move {
-            let medias = media::MediaEntity::find().all(&db.db).await?;
-            Ok(medias)
-        };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(ECSHandleResult::new(handle))
+        Self(LoadMediasTask::new(db, runtimer))
     }
 }
 
@@ -145,18 +139,11 @@ impl ListDownloadruleTask {
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListDownloadtaskTask(
-    pub ECSHandleResult<Vec<downloadtask::DownloadtaskModel>, anyhow::Error>,
-);
+pub struct ListDownloadtaskTask(pub LoadDownloadtaskTask);
 
 impl ListDownloadtaskTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move {
-            let medias = downloadtask::DownloadtaskEntity::find().all(&db.db).await?;
-            Ok(medias)
-        };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(ECSHandleResult::new(handle))
+        Self(LoadDownloadtaskTask::new(db, runtimer))
     }
 }
 

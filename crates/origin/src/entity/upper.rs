@@ -8,6 +8,8 @@ use url::Url;
 
 use crate::{entity::UpperCid, table::ToTableRecord};
 
+pub const UPPER: &str = "Upper";
+
 // ========== 向后兼容别名 ==========
 pub use Entity as UpperEntity;
 pub use Model as UpperModel;
@@ -26,13 +28,13 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "crate::entity::upper_media::UpMediaEntity")]
+    #[sea_orm(has_many = "crate::entity::upper_media::Entity")]
     MediaUp,
     #[sea_orm(has_many = "crate::entity::upper_account::Entity")]
     UpAccount,
 }
 
-impl Related<crate::entity::upper_media::UpMediaEntity> for Entity {
+impl Related<crate::entity::upper_media::UpperMediaEntity> for Entity {
     fn to() -> RelationDef {
         Relation::MediaUp.def()
     }
@@ -58,7 +60,7 @@ impl Related<crate::entity::media::MediaEntity> for Entity {
         crate::entity::upper_media::Relation::Media.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(crate::entity::upper_media::Relation::Up.def().rev())
+        Some(crate::entity::upper_media::Relation::Upper.def().rev())
     }
 }
 

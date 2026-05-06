@@ -7,8 +7,10 @@ use crate::{
     table::ToTableRecord,
 };
 
-pub use self::Entity as MediaEntity;
-pub use self::Model as MediaModel;
+pub const MEDIA: &str = "Media";
+
+pub type MediaEntity = Entity;
+pub type MediaModel = Model;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, DeriveEntityModel, Deserialize)]
 #[sea_orm(table_name = "media")]
@@ -41,7 +43,7 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "crate::entity::collection_media::CollectionMediaEntity")]
     MediaSet,
-    #[sea_orm(has_many = "crate::entity::upper_media::UpMediaEntity")]
+    #[sea_orm(has_many = "crate::entity::upper_media::Entity")]
     MediaUp,
 }
 
@@ -51,7 +53,7 @@ impl Related<crate::entity::collection_media::CollectionMediaEntity> for Entity 
     }
 }
 
-impl Related<crate::entity::upper_media::UpMediaEntity> for Entity {
+impl Related<crate::entity::upper_media::UpperMediaEntity> for Entity {
     fn to() -> RelationDef {
         Relation::MediaUp.def()
     }
@@ -68,7 +70,7 @@ impl Related<crate::entity::collection::CollectionEntity> for Entity {
 
 impl Related<crate::entity::upper::Entity> for Entity {
     fn to() -> RelationDef {
-        crate::entity::upper_media::Relation::Up.def()
+        crate::entity::upper_media::Relation::Upper.def()
     }
     fn via() -> Option<RelationDef> {
         Some(crate::entity::upper_media::Relation::Media.def().rev())
@@ -109,8 +111,6 @@ pub struct MediaInfoSingle {
     pub code: i64,
     pub data: Option<Media>,
     pub message: Option<String>,
-    /// 视频公开时间
-    pub pubdate: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +144,8 @@ pub struct Media {
     #[serde(default)]
     pub r#type: MediaType,
     pub pic: Url,
+    /// 视频公开时间
+    pub pubdate: u64,
 }
 
 #[derive(Debug, Deserialize)]

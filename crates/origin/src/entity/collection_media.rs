@@ -20,14 +20,14 @@ impl EntityName for CollectionMediaEntity {
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct CollectionMediaModel {
-    pub media_cid: i64,
+    pub media_id: i64,
     pub collection_id: i64,
 }
 
 impl ToTableRecord<2> for CollectionMediaModel {
     fn to_record(&self) -> [Cow<'_, str>; 2] {
         [
-            Cow::Owned(self.media_cid.to_string()),
+            Cow::Owned(self.media_id.to_string()),
             Cow::Owned(self.collection_id.to_string()),
         ]
     }
@@ -36,7 +36,7 @@ impl ToTableRecord<2> for CollectionMediaModel {
 impl ToTableRecord<2> for &CollectionMediaModel {
     fn to_record(&self) -> [Cow<'_, str>; 2] {
         [
-            Cow::Owned(self.media_cid.to_string()),
+            Cow::Owned(self.media_id.to_string()),
             Cow::Owned(self.collection_id.to_string()),
         ]
     }
@@ -44,13 +44,13 @@ impl ToTableRecord<2> for &CollectionMediaModel {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
 pub enum Column {
-    MediaCid,
+    MediaId,
     CollectionId,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
 pub enum PrimaryKey {
-    MediaCid,
+    MediaId,
     CollectionId,
 }
 
@@ -71,7 +71,7 @@ impl ColumnTrait for Column {
     type EntityName = CollectionMediaEntity;
     fn def(&self) -> ColumnDef {
         match self {
-            Self::MediaCid => ColumnType::BigInteger.def(),
+            Self::MediaId => ColumnType::BigInteger.def(),
             Self::CollectionId => ColumnType::BigInteger.def(),
         }
     }
@@ -80,8 +80,8 @@ impl ColumnTrait for Column {
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::Media => CollectionMediaEntity::belongs_to(super::media::MediaEntity)
-                .from(Column::MediaCid)
+            Self::Media => CollectionMediaEntity::belongs_to(super::media::Entity)
+                .from(Column::MediaId)
                 .to(super::media::Column::Aid)
                 .into(),
             Self::Set => CollectionMediaEntity::belongs_to(super::collection::CollectionEntity)

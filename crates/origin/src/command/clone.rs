@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bevy::{
     app::{Plugin, PostUpdate, Update},
     ecs::{
@@ -15,7 +17,10 @@ use crate::{
     command::downloadrule::ActiveDownloadrule,
     components::{
         auth::handle::ActiveAccounts,
-        download::{DownloadHandle, DownloadList, DownloadWay},
+        download::{
+            DownloadFileError, DownloadFileErrorKind, DownloadHandle, DownloadPendding, DownloadWay,
+        },
+        downloadtask::handle::{DownloadList, DownloadRelatedTaskId},
         status::handle::{ActiveStatus, StatusRelatedDownloadrule},
     },
     console::ConsoleTrims,
@@ -39,7 +44,7 @@ impl Plugin for DownloadPlugin {
 
 pub fn upsert_download_list(
     mut console_message: MessageReader<ConsoleTrims>,
-    mut lists: ResMut<DownloadList>,
+    runtimer: ResMut<TokioTasksRuntime>,
 ) {
     for message in console_message.read() {
         let ConsoleTrims { args, argv: _ } = message;
@@ -50,10 +55,51 @@ pub fn upsert_download_list(
 
         match args.get(2).map(String::as_str) {
             Some(str) => {
-                let way = DownloadWay::new(str);
+                let way = DownloadWay::new(str.to_string());
+                runtimer.spawn_background_task(move |mut ctx| async move {
+                    let timer = tokio::time::timeout(Duration::from_secs(3), async {
+                        let infomation = way.to_response().await?;
 
-                info!("add a download media<{:?}> task", way.0);
-                lists.push(way);
+                        infomation
+                            .data
+                            .ok_or(DownloadFileError::new(DownloadFileErrorKind::MediaPage))
+                    });
+
+                    let Ok(result) = timer.await else {
+                        error!(
+                            "add a download media<{:?}> task error, time response overflow",
+                            way.0
+                        );
+                        return;
+                    };
+
+                    match result {
+                        Ok(media) => {
+                            info!("add a download media<{:?}> task", media.aid);
+                            let _ = ctx
+                                .run_on_main_thread(move |world| {
+                                    let mut building = world.world.resource_mut::<ActiveAccounts>();
+                                    if building.try_result().is_ok_and(|result| result.is_empty()) {
+                                        error!(
+                                            "No active account found. Please make sure login first."
+                                        );
+                                    }
+
+                                    let mut downloadlist =
+                                        world.world.resource_mut::<DownloadList>();
+
+                                    downloadlist.push(DownloadRelatedTaskId {
+                                        id: media.aid,
+                                        taskid: vec![],
+                                    });
+                                })
+                                .await;
+                        }
+                        Err(err) => {
+                            error!("add a download media<{:?}> task error: {:?}", way.0, err);
+                        }
+                    }
+                });
             }
             None => {
                 // 输出help
@@ -128,7 +174,7 @@ pub fn download_task_finished(mut commands: Commands, query: Query<(&mut Downloa
                 info!("download task handle finishied media<{:?}>", bvid);
             }
             Err(err) => {
-                info!("download task handle error:{:?}", err);
+                error!("download task handle error:{:?}", err);
             }
         }
 

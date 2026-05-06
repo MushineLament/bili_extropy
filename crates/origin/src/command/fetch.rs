@@ -199,10 +199,25 @@ pub fn spawn_fetch_task(
                     }
 
                     Some("medias") => {
+                        let Ok(result) = active_account.try_result() else {
+                            continue;
+                        };
+
+                        let Some(cookies) = result.first().map(|first| first.cookies.clone())
+                        else {
+                            error!("not any active account");
+                            continue;
+                        };
+
                         commands.spawn_batch(
                             ids.into_iter()
                                 .map(|id| {
-                                    FetchUpperMediasData::new(db.clone(), id, runtimer.as_mut())
+                                    FetchUpperMediasData::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.clone(),
+                                    )
                                 })
                                 .collect::<Vec<_>>(),
                         );

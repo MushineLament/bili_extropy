@@ -14,9 +14,10 @@ use tracing::{debug, error, info};
 use crate::{
     api::BiliApi,
     components::{
-        download::{DownloadFileError, DownloadFileErrorKind, DownloadWay},
+        download::{DownloadPendding, DownloadWay},
         handle::ECSHandleResult,
     },
+    cookies::{add_cookie_jar, parse_cookies},
     db::Db,
     entity::{
         CollectionId, UpperCid,
@@ -46,9 +47,8 @@ pub struct FetchUpperMediasData(pub ECSHandleResult<(UpperCid, u64), anyhow::Err
 
 impl FetchUpperMediasData {
     #[track_caller]
-    pub fn new(db: Db, id: UpperCid, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task =
-            runtimer.spawn_background_task(move |_ctx| Self::task(db, id, MaybeLocation::caller()));
+    pub fn new(db: Db, id: UpperCid, runtimer: &mut TokioTasksRuntime, cookies: String) -> Self {
+        let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, id, cookies));
 
         Self(ECSHandleResult::new(task))
     }
@@ -56,50 +56,66 @@ impl FetchUpperMediasData {
     pub async fn task(
         db: Db,
         cid: UpperCid,
-        caller: MaybeLocation,
+        cookies: String,
     ) -> Result<(UpperCid, u64), anyhow::Error> {
         let PublishNumResp {
             data: PublishNumData { video },
-        } = BiliApi::request(PublishNumPayload { mid: cid }).await?;
+        } = BiliApi::request(PublishNumPayload { mid: cid })
+            .await
+            .map_err(|err| {
+                error!(
+                    "this happend error:{:?} ,caller:{:?}",
+                    err,
+                    MaybeLocation::caller()
+                );
+                err
+            })?;
         if video == 0 {
             return Ok((cid, 0));
         }
 
         // info!("Fetching published videos of up<{}>", up.name);
         let page = (video - 1) / 30 + 1;
-        let mut tasks = futures::stream::iter(1..=page)
-            .map(|pn| async move {
-                let InUpResp {
-                    data:
-                        InUpData {
-                            list: InUpList { vlist },
-                        },
-                } = BiliApi::request(InUpPayload::new(cid, pn, 30).await?)
-                    .await
-                    .map_err(|err| {
-                        anyhow::anyhow!("Failed to fetch up space page {pn}, error: {:?}", err)
-                    })?;
-                Ok::<_, anyhow::Error>(vlist)
-            })
-            .buffer_unordered(8);
 
         let mut medias = vec![];
 
-        while let Some(res) = tasks.next().await {
-            match res {
-                Ok(list) => medias.extend(list),
-                Err(e) => error!("{}", e),
-            }
+        for pn in 1..=page {
+            add_cookie_jar(parse_cookies(&cookies));
+
+            let Ok(up_payload) = InUpPayload::new(cid, pn, 30)
+                .await
+                .map_err(|err| info!("Failed to fetch up, cuase wbi get error:{:?}", err))
+            else {
+                continue;
+            };
+
+            let Ok(InUpResp {
+                data: InUpData {
+                    list: InUpList { vlist },
+                },
+            }) = BiliApi::request(up_payload).await.map_err(|err| {
+                anyhow::anyhow!("Failed to fetch up space page {pn}, error: {:?}", err)
+            })
+            else {
+                continue;
+            };
+
+            medias.extend(vlist);
         }
 
-        let state = upper_media::UpMediaEntity::insert_many(medias.into_iter().map(|m| {
+        let state = upper_media::UpperMediaEntity::insert_many(medias.into_iter().map(|m| {
             // debug!("Linking media<{}> and up<{}>", m.title, up.name);
-            upper_media::UpMediaModel {
-                id: m.id,
+            upper_media::UpperMediaModel {
+                media_id: m.id,
                 upper_id: cid,
             }
             .into_active_model()
         }))
+        .on_conflict(
+            OnConflict::columns([upper_media::Column::MediaId, upper_media::Column::UpperId])
+                .update_columns([upper_media::Column::MediaId, upper_media::Column::UpperId])
+                .to_owned(),
+        )
         .exec_without_returning(&db.db)
         .await
         .map_err(|err| {
@@ -107,7 +123,7 @@ impl FetchUpperMediasData {
                 "insert many upper medias error: {:?}, upperid<{:?}>, caller:{:?}",
                 err,
                 cid,
-                caller
+                MaybeLocation::caller()
             )
         });
 
@@ -135,11 +151,7 @@ impl FetchMediaData {
     ) -> Result<(DownloadWay, u64), anyhow::Error> {
         let Ok(MediaInfoSingle {
             data: Some(media), ..
-        }) = id
-            .clone()
-            .response()
-            .await
-            .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)))
+        }) = id.to_response().await
         else {
             return Err(anyhow::anyhow!(
                 "fetch single media error,id<{:?}>,caller{:?}",
@@ -241,7 +253,7 @@ impl FetchCollectMediasData {
             collection_media::CollectionMediaEntity::insert_many(medias.into_iter().map(|m| {
                 debug!("Linking media<{}> and set<{}>", m.title, model.name);
                 collection_media::CollectionMediaModel {
-                    media_cid: m.id,
+                    media_id: m.id,
                     collection_id: model.collection_id,
                 }
                 .into_active_model()

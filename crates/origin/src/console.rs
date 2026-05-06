@@ -228,6 +228,19 @@ impl ConsoleTrims {
     pub fn is_empty_ids(&self) -> bool {
         self.argv.get("id").is_none_or(|vec| vec.is_empty())
     }
+
+    pub fn get_states(&self) -> impl IntoIterator<Item = &str> {
+        self.argv
+            .get("state")
+            .into_iter()
+            .map(|states| states.iter())
+            .flatten()
+            .map(String::as_str)
+    }
+
+    pub fn get_first_state(&self) -> Option<&str> {
+        self.get_states().into_iter().next()
+    }
 }
 
 #[derive(Debug)]

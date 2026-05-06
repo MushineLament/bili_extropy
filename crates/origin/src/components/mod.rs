@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod download;
+pub mod downloadtask;
 pub mod fetch;
 pub mod list;
 pub mod status;

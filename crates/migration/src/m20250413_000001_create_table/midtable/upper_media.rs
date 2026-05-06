@@ -1,7 +1,5 @@
 use sea_orm_migration::{prelude::*, schema::*};
 
-use crate::m20250413_000001_create_table::{Media, Upper};
-
 #[derive(DeriveIden)]
 pub enum UpperMedia {
     Table,
@@ -19,22 +17,6 @@ impl UpperMedia {
                 Index::create()
                     .col(UpperMedia::MediaId)
                     .col(UpperMedia::UpperId),
-            )
-            .foreign_key(
-                ForeignKey::create()
-                    .name("media_upper_fk")
-                    .from(UpperMedia::Table, UpperMedia::MediaId)
-                    .to(Media::Table, Media::Aid)
-                    .on_delete(ForeignKeyAction::Cascade)
-                    .on_update(ForeignKeyAction::Cascade),
-            )
-            .foreign_key(
-                ForeignKey::create()
-                    .name("upper_media_fk")
-                    .from(UpperMedia::Table, UpperMedia::UpperId)
-                    .to(Upper::Table, Upper::UpperId)
-                    .on_delete(ForeignKeyAction::Cascade)
-                    .on_update(ForeignKeyAction::Cascade),
             )
             .to_owned()
     }

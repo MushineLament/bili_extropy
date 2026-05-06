@@ -6,6 +6,7 @@ pub enum Upper {
     UpperId,
     Name,
 }
+
 impl Upper {
     pub fn create_table() -> TableCreateStatement {
         Table::create()

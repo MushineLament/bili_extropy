@@ -15,6 +15,8 @@ use crate::{
     api::BiliApi,
     components::{
         download::{MediaInfoAidPayload, MediaInfoBvidPayload},
+        downloadtask::{handle::TaskId, load::LoadDownloadtaskTask},
+        fetch::handle::Loadable,
         handle::{ECSHandle, ECSHandleResult},
         status::handle::{DownloadruleId, StatusId},
     },
@@ -23,6 +25,7 @@ use crate::{
     entity::{
         BvId, MediaAid,
         downloadrule::DownloadruleModel,
+        downloadtask,
         media::{self, Media, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
         status::StatusModel,
     },
@@ -31,7 +34,7 @@ use crate::{
     response::{self, Dash, DashData, DashResp},
 };
 use anyhow::{Result, anyhow};
-use api_req::{ApiCaller as _, error::ApiErr};
+use api_req::ApiCaller as _;
 use bevy::{
     ecs::{change_detection::MaybeLocation, component::Component},
     platform::{
@@ -48,7 +51,9 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use migration::OnConflict;
 use reqwest::{IntoUrl, Response, header::CONTENT_LENGTH};
-use sea_orm::{ActiveValue::Unchanged, EntityTrait as _, IntoActiveModel as _};
+use sea_orm::{
+    ActiveValue::Unchanged, ColumnTrait, EntityTrait as _, IntoActiveModel as _, QueryFilter,
+};
 use tempfile::NamedTempFile;
 use tracing::{error, info, warn};
 use url::Url;
@@ -64,45 +69,98 @@ impl DownloadWay {
     pub fn new<T: Into<String>>(str: T) -> Self {
         Self(str.into())
     }
+}
 
-    pub async fn response(self) -> Result<MediaInfoSingle, ApiErr> {
-        let anyhow = anyhow::anyhow!("request aid media<{:?}>", self.0);
+impl DownloadPendding for DownloadWay {
+    fn to_response(
+        &self,
+    ) -> impl Future<Output = Result<MediaInfoSingle, DownloadFileError>> + Send {
+        let handle = async {
+            let anyhow = anyhow::anyhow!("request aid media<{:?}>", self.0);
 
-        let aid = self.0.parse::<MediaAid>();
+            let response: std::result::Result<MediaInfoSingle, DownloadFileError> =
+                BiliApi::request(MediaInfoBvidPayload {
+                    bvid: self.0.clone(),
+                })
+                .await
+                .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)));
 
-        let response: Result<MediaInfoSingle, ApiErr> =
-            BiliApi::request(MediaInfoBvidPayload { bvid: self.0 }).await;
+            if response.is_ok() {
+                return response;
+            }
 
-        // first try BvId
-        if let Ok(media) = response {
-            return Ok(media);
+            let Ok(aid) = self.0.parse::<MediaAid>() else {
+                // if not a mediacid and not a avlid bvid
+                error!(
+                    "{:?}",
+                    anyhow::anyhow!("{:?} error:{:?}", anyhow, MaybeLocation::caller())
+                );
+                return response;
+            };
+
+            let response: Result<MediaInfoSingle, DownloadFileError> =
+                BiliApi::request(MediaInfoAidPayload { aid })
+                    .await
+                    .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)));
+
+            response
         };
 
-        let Ok(aid) = aid else {
-            // if not a mediacid and not a avlid bvid
-            error!(
-                "{:?}",
-                anyhow::anyhow!("{:?} error:{:?}", anyhow, MaybeLocation::caller())
-            );
-            return response;
-        };
-
-        let response: Result<MediaInfoSingle, ApiErr> =
-            BiliApi::request(MediaInfoAidPayload { aid }).await;
-
-        response
+        handle
     }
+
+    fn media_aid(&self) -> impl Future<Output = Result<MediaAid, DownloadFileError>> {
+        async {
+            let response = self.to_response().await?;
+
+            let media = response
+                .data
+                .ok_or(DownloadFileError::new(DownloadFileErrorKind::MediaPage))?;
+
+            Ok(media.aid)
+        }
+    }
+
+    fn related_task_id(
+        &self,
+        db: &Db,
+    ) -> impl Future<Output = Result<Vec<TaskId>, DownloadFileError>> {
+        async {
+            let media_id = self.media_aid().await?;
+
+            let realted_taskids = LoadDownloadtaskTask::load_with(db, |select| {
+                select.filter(downloadtask::Column::Id.eq(media_id))
+            })
+            .await
+            .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::Db(err)))?;
+
+            Ok(realted_taskids.into_iter().map(|model| model.id).collect())
+        }
+    }
+}
+
+pub trait DownloadPendding {
+    fn to_response(
+        &self,
+    ) -> impl Future<Output = Result<MediaInfoSingle, DownloadFileError>> + Send;
+
+    fn media_aid(&self) -> impl Future<Output = Result<MediaAid, DownloadFileError>>;
+
+    fn related_task_id(
+        &self,
+        db: &Db,
+    ) -> impl Future<Output = Result<Vec<TaskId>, DownloadFileError>>;
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
 pub struct DownloadHandle(pub ECSHandle<Result<BvId, DownloadFileError>>);
 
 impl DownloadHandle {
-    pub fn new<T: Into<String>>(
+    pub fn new<T: Into<String>, R: DownloadPendding + 'static + Send>(
         db: Db,
         bars: MultiProgress,
         cookies: T,
-        list: DownloadWay,
+        list: R,
         runtimer: &mut TokioTasksRuntime,
         active_status: Arc<HashMap<i64, StatusModel>>,
         active_downloadrule: Arc<HashMap<i64, DownloadruleModel>>,
@@ -114,29 +172,25 @@ impl DownloadHandle {
         let task = async move {
             add_cookie_jar(parse_cookies(&cookies));
 
-            let bvid = list.0.clone();
+            let media = list.to_response().await?;
 
-            let media = list
-                .response()
-                .await
-                .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)));
-
-            let Ok(MediaInfoSingle {
+            let MediaInfoSingle {
                 code: _,
                 data: Some(media),
                 message: _,
-                pubdate,
-            }) = media
+            } = media
             else {
-                return media.map(|_| bvid);
+                return Err(DownloadFileError::new(DownloadFileErrorKind::MediaPage));
             };
+
+            let mediaid = media.aid;
 
             // 时间符合要求的计算
             let _allow = active_downloadrule.iter().filter(|(_ruleid, model)| {
-                DateTime::from_timestamp(pubdate as i64, 0)
+                DateTime::from_timestamp(media.pubdate as i64, 0)
                     .map(|pubdate| model.default_relation_date(pubdate.naive_utc()))
                     .unwrap_or_else(|| {
-                        error!("compute media<{}> public date time error,will ignore about time download rule.", bvid);
+                        error!("compute media<{:?}> public date time error,will ignore about time download rule.", mediaid);
                         true
                     })
             });
@@ -1274,6 +1328,7 @@ impl std::error::Error for DownloadFileError {
             DownloadFileErrorKind::Serialize(e) => Some(e),
             DownloadFileErrorKind::Status(error) => error.source(),
             DownloadFileErrorKind::Page(e) => e.source(),
+            DownloadFileErrorKind::MediaPage => None,
         }
     }
 }
@@ -1288,6 +1343,7 @@ pub enum DownloadFileErrorKind {
     Db(sea_orm::DbErr),
     Page(anyhow::Error),
     Serialize(serde_json::Error),
+    MediaPage,
 }
 
 impl std::fmt::Display for DownloadFileError {
@@ -1316,6 +1372,13 @@ impl std::fmt::Display for DownloadFileError {
             }
             DownloadFileErrorKind::Serialize(error) => {
                 write!(f, "Serialize error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::MediaPage => {
+                write!(
+                    f,
+                    "media page error, maybe media is not exist, caller:{:?}",
+                    self.caller
+                )
             }
         }
     }

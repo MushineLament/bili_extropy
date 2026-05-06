@@ -2,67 +2,32 @@
 
 use sea_orm::entity::prelude::*;
 
-type Model = UpMediaModel;
-type Entity = UpMediaEntity;
+pub type UpperMediaModel = Model;
+pub type UpperMediaEntity = Entity;
 
-#[derive(Copy, Clone, Default, Debug, DeriveEntity)]
-pub struct UpMediaEntity;
-
-impl EntityName for UpMediaEntity {
-    fn table_name(&self) -> &str {
-        "upper_media"
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
-pub struct UpMediaModel {
-    pub id: i64,
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Hash)]
+#[sea_orm(table_name = "upper_media")]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub media_id: i64,
+    #[sea_orm(primary_key, auto_increment = false)]
     pub upper_id: i64,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveColumn)]
-pub enum Column {
-    Id,
-    UpperId,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DerivePrimaryKey)]
-pub enum PrimaryKey {
-    Id,
-    UpperId,
-}
-
-impl PrimaryKeyTrait for PrimaryKey {
-    type ValueType = (i64, i64);
-    fn auto_increment() -> bool {
-        false
-    }
 }
 
 #[derive(Copy, Clone, Debug, EnumIter)]
 pub enum Relation {
     Media,
-    Up,
-}
-
-impl ColumnTrait for Column {
-    type EntityName = UpMediaEntity;
-    fn def(&self) -> ColumnDef {
-        match self {
-            Self::Id => ColumnType::BigInteger.def(),
-            Self::UpperId => ColumnType::BigInteger.def(),
-        }
-    }
+    Upper,
 }
 
 impl RelationTrait for Relation {
     fn def(&self) -> RelationDef {
         match self {
-            Self::Media => UpMediaEntity::belongs_to(super::media::MediaEntity)
-                .from(Column::Id)
+            Self::Media => UpperMediaEntity::belongs_to(super::media::Entity)
+                .from(Column::MediaId)
                 .to(super::media::Column::Aid)
                 .into(),
-            Self::Up => UpMediaEntity::belongs_to(super::upper::Entity)
+            Self::Upper => UpperMediaEntity::belongs_to(super::upper::Entity)
                 .from(Column::UpperId)
                 .to(super::upper::Column::UpperId)
                 .into(),
@@ -70,15 +35,15 @@ impl RelationTrait for Relation {
     }
 }
 
-impl Related<super::media::MediaEntity> for UpMediaEntity {
+impl Related<super::media::MediaEntity> for UpperMediaEntity {
     fn to() -> RelationDef {
         Relation::Media.def()
     }
 }
 
-impl Related<super::upper::Entity> for UpMediaEntity {
+impl Related<super::upper::Entity> for UpperMediaEntity {
     fn to() -> RelationDef {
-        Relation::Up.def()
+        Relation::Upper.def()
     }
 }
 

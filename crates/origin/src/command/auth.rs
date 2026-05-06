@@ -1,17 +1,19 @@
 use bevy::{
-    app::{Plugin, PostStartup, Update},
+    app::{Plugin, PostStartup, PreUpdate, Update},
     ecs::{
+        change_detection::MaybeLocation,
+        entity::Entity,
         message::MessageReader,
-        system::{Commands, Res, ResMut},
+        system::{Commands, Local, Query, Res, ResMut},
     },
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::{
     components::{
         auth::handle::{ActiveAccounts, AuthLoginTask},
-        initialize::DbInitailizeResource as _,
+        initialize::DbInitailizeResource,
     },
     console::ConsoleTrims,
     db::Db,
@@ -22,7 +24,8 @@ pub struct CommmandLoginPlugin;
 impl Plugin for CommmandLoginPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_systems(PostStartup, ActiveAccounts::new.to_system())
-            .add_systems(Update, command_login);
+            .add_systems(PreUpdate, command_login)
+            .add_systems(Update, auth_login_task);
     }
 }
 
@@ -51,6 +54,40 @@ pub fn command_login(
                 // 输出help
             }
         }
+    }
+}
+
+pub fn auth_login_task(
+    mut commands: Commands,
+    query: Query<(&mut AuthLoginTask, Entity)>,
+    mut has_change: Local<bool>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+
+        info!(
+            "update active account<{}>, name<{}>",
+            result.account_id, result.name
+        );
+
+        commands.entity(entity).try_despawn();
+
+        if !*has_change {
+            *has_change = true;
+        }
+    }
+
+    if *has_change {
+        commands.insert_resource(ActiveAccounts::new(db.clone(), runtimer.as_mut()));
+        commands.queue(|world: &mut bevy::ecs::world::World| {
+            let mut building = world.resource_mut::<ActiveAccounts>();
+            let result = building.block_on().unwrap();
+            info!("result:{:?},caller: {:?}", result, MaybeLocation::caller());
+        });
     }
 }
 
