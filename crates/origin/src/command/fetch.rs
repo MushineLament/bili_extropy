@@ -13,6 +13,7 @@ use bevy_tokio_tasks::TokioTasksRuntime;
 use tracing::{error, info};
 
 use crate::{
+    command::HELP,
     components::{
         auth::handle::ActiveAccounts,
         download::DownloadWay,
@@ -37,16 +38,17 @@ Commands:
         collections                 Fetch account's collections list.
 
     upper                       Fetch data related to an Upper.
-        followings                  Fetch upper's followed list.
-        collections                 Fetch upper's collection list.
-        medias                      Fetch upper's media list.
+        followings [--id]           Fetch upper's followed list.if not point id, default use account's id. 
+        collections [--id]          Fetch upper's collection list.if not point id, default use account's id. 
+        medias [--id]               Fetch upper's media list.if not point id, default use account's id. 
 
     collection                  Fetch data related to a Collection.
         medias                      Fetch collection's media list.
     
-    media                       Fetch data related to a single media.
-    
-    help                        Print this message or the help of the given subcommand(s)
+    media                       Fetch data related media.
+        <BvId>/<Aid>                Fetch data related to a single media.
+
+    help                        Print this.
 
 Options:
     -v,         --verbose           Show debug messages
@@ -56,8 +58,9 @@ Options:
 
 Example:
     fetch account followings                     # uses active account ID
-    fetch account followings --id 123456         # override account ID
+    fetch account followings --id 328853714         # override account ID
     fetch upper followings
+    fetch media BV1dWcoe2EdF
 "#;
 
 const FETCH_COMMAND_INDEX: usize = 2;
@@ -286,6 +289,9 @@ pub fn spawn_fetch_task(
                         );
                     }
                 }
+            }
+            Some(help) if help.to_lowercase().eq(HELP) => {
+                error!("\n{}", help);
             }
             Some(unkown) => {
                 error!("not has this command: {:?}", unkown);

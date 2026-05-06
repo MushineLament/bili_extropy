@@ -23,9 +23,6 @@ use crate::{
     },
 };
 
-#[derive(Debug, Resource, Default, Clone, Deref, DerefMut)]
-pub struct DownloadList(pub Vec<DownloadRelatedTaskId>);
-
 pub type TaskId = i64;
 
 #[derive(Debug, Component, Deref, DerefMut)]
@@ -71,6 +68,15 @@ pub struct DownloadRelatedTaskId {
 
     /// 关联的taskid，下载完成后，会将taskid下对应的mediaaid更新
     pub taskid: Vec<TaskId>,
+}
+
+impl Default for DownloadRelatedTaskId {
+    fn default() -> Self {
+        Self {
+            id: -1,
+            taskid: Default::default(),
+        }
+    }
 }
 
 impl DownloadRelatedTaskId {

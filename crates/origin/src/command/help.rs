@@ -9,20 +9,16 @@ use crate::console::ConsoleTrims;
 pub const HELP: &str = r#"
 Back up your favorite bilibili online resources with RESP.
 
-Usage: [OPTIONS] [COMMAND]
+Usage: [COMMAND]
 
 Commands:
-    auth        Auth account
-    list        List accounts/sets/ups/medias [alias: ls, l]
-    activate    Activate obj [alias: active, a]
-    deactivate  Deactivate obj [alias: d]
-    status      download media into folder [alias: s]
-    fetch       Fetch metadata of following ups, fav sets, medias, ups [alias: f]
-    pull        Pull fetched medias [alias: p]
-    clone       download single medias [alias: c]
-    like        Like medias
-    completion  Generate completion script
-    help        Print this message or the help of the given subcommand(s)
+    account     User account
+    list        List infomation
+    status      Download media into folder
+    fetch       Fetch metadata of following collection, medias, uppers
+    pull        Download medias by downloadtask tables
+    clone       Download single media
+    help        Print this.
 
 Options:
     -v, --verbose  Show debug messages
@@ -30,8 +26,8 @@ Options:
     -V, --version  Print version
     
 Example:
-    list account
-    clone 
+    list        
+    status      #Print download medias into path.
 "#;
 
 pub struct CommandHelpPlugin;

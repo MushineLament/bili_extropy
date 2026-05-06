@@ -13,6 +13,7 @@ use sea_orm::ActiveValue;
 use tracing::{error, info};
 
 use crate::{
+    command::HELP,
     components::{
         initialize::DbInitailizeComponent as _,
         list::handle::ListStatusTask,
@@ -32,19 +33,18 @@ Back up your favorite bilibili online resources with RESP.
 Usage: status <COMMAND> [OPTIONS] 
 
 Commands:
-    insert                     insert a download media path.
-        <FOLDER_NAME> <PATH>       dowload media into PATH's folder.
+    insert                                              Insert a download media path.
+        <FOLDER_NAME> <PATH> [--state Active/InActive]      Dowload media into PATH's FOLDER_NAME folder.
 
 Options:
-    -v,         --verbose           Show debug messages
-    -h,         --help              Print help
-    -V,         --version           Print version
-    -id [ID],   --id [ID]           Point ID
+    -v,         --verbose                               Show debug messages
+    -h,         --help                                  Print help
+    -V,         --version                               Print version
+    -id [ID],   --id [ID]                               Point ID
 
 Example:
-    fetch account followings                     # uses active account ID
-    status add folder_name
-    status add folder_name .temp
+    status insert folder_name
+    status insert folder_name .temp --state Active
 "#;
 
 const STATUS_COMMAND_INDEX: usize = 2;
@@ -94,12 +94,11 @@ pub fn spawn_status_task(
                         .map(|path| ActiveValue::set(path.clone()))
                         .unwrap_or(ActiveValue::NotSet);
 
-                    let state = if argv.contains_key("exclusive") {
-                        ActiveValue::Set(StatusState::Exclusive.to_string())
-                    } else if argv.contains_key("active") {
-                        ActiveValue::Set(StatusState::Active.to_string())
-                    } else {
-                        ActiveValue::NotSet
+                    let state = match message.get_first_state() {
+                        Some("Active") => ActiveValue::Set(StatusState::Active.to_string()),
+                        Some("Inactive") => ActiveValue::Set(StatusState::Inactive.to_string()),
+                        Some(unkonw) => ActiveValue::Set(unkonw.to_string()),
+                        None => ActiveValue::NotSet,
                     };
 
                     info!(
@@ -126,6 +125,8 @@ pub fn spawn_status_task(
                         },
                     ));
 
+                    commands.spawn(LoadStatusTask::new(db.clone(), runtimer.as_mut()));
+
                     if let Some(relation) = argv.get("downloadrule") {
                         let related = relation
                             .iter()
@@ -148,6 +149,9 @@ pub fn spawn_status_task(
                     continue;
                 }
             },
+            Some(help) if help.to_lowercase().eq(HELP) => {
+                info!("\n{}", HELP_STATUS);
+            }
             Some(unkown) => {
                 error!("not has this command: {:?}", unkown);
             }

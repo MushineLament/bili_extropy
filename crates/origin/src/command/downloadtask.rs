@@ -11,6 +11,7 @@ use sea_orm::ActiveValue;
 use tracing::{error, info};
 
 use crate::{
+    command::HELP,
     components::{
         auth::handle::ActiveAccounts,
         downloadtask::{handle::InsertDownloadtaskTask, load::LoadDownloadtaskTask},
@@ -21,37 +22,30 @@ use crate::{
     entity::downloadtask::{self},
 };
 
-pub const HELP_DOWNLOAD_TASK: &str = r#"
+pub const HELP_DOWNLOADTASK: &str = r#"
 Back up your favorite bilibili online resources with RESP.
 
-Usage: downloadrule <COMMAND> [SUB_COMMAND] [OPTIONS]
+Usage: task <COMMAND> [SUB_COMMAND] [OPTIONS]
 
 Commands:
-    insert                      Insert a download rule.
-        <name> [--AddRule]          Insert a <name> rule.
+    insert                      Insert downloadtask.
+        Media/Upper/Collection <Id> [--state Pending/Active/Inactive]         Insert downloadtask, Id type must is number.
 
-    remove                      Remove rule.
-        <id>                    remove by rule id.
+    remove                      Remove task.#Not Finished
+        <id>                    remove by task id.
 
-    help                        Print this message or the help of the given subcommand(s)
-
-AddRule:
-    -d,         --data          Show debug messages
-    
+    help                        Print this.
 
 Options:
     -v,         --verbose       Show debug messages
     -h,         --help          Print help
     -V,         --version       Print version
-    -id [ID],   --id [ID]       Point ID
 
 Example:
-    List medias
-    List account --id 114514 
-    List upper followings
+    insert Media 113844248642487    #Insert a pending media download task.
 "#;
 
-pub const DOWNLOAD_TASK_COMMAND_INDEX: usize = 2;
+pub const DOWNLOADTASK_COMMAND_INDEX: usize = 2;
 
 pub struct CommandDownloadtaskPlugin;
 
@@ -85,7 +79,7 @@ pub fn spawn_list_task(
             .map(|id| ActiveValue::Set(id))
             .unwrap_or(ActiveValue::NotSet);
 
-        match args.get(DOWNLOAD_TASK_COMMAND_INDEX).map(String::as_str) {
+        match args.get(DOWNLOADTASK_COMMAND_INDEX).map(String::as_str) {
             Some("start") => {
                 let db = db.clone();
                 runtimer.spawn_background_task(|_ctx| async move {
@@ -132,6 +126,10 @@ pub fn spawn_list_task(
                         state,
                     },
                 ));
+            }
+
+            Some(help) if help.to_lowercase().eq(HELP) => {
+                info!("\n{}", HELP_DOWNLOADTASK);
             }
 
             Some(unkown) => {

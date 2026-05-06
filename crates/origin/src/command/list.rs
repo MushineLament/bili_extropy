@@ -36,16 +36,16 @@ Commands:
         collections                 List account's collections.
 
     upper                       List data related to an Upper.
-        followings                  List upper's followeds.
-        collections                 List upper's collections.
-        medias                      List upper's medias.
+        followings [--id]                 List upper's followeds. If not point id, default use account's id.
+        collections [--id]                List upper's collections. If not point id, default use account's id.
+        medias [--id]                     List upper's medias. If not point id, default use account's id.
 
     collection                  List data related to a Collection.
-        medias                      List collection's medias.
+        medias [--id]                      List collection's medias. If not point id, default use account's id.
     
     media                       List data related to a single media.
     
-    help                        Print this message or the help of the given subcommand(s)
+    help                        Print this.
 
 Options:
     -v,         --verbose       Show debug messages
@@ -54,9 +54,9 @@ Options:
     -id [ID],   --id [ID]       Point ID
 
 Example:
-    List medias
-    List account --id 114514 
-    List upper followings
+    List medias                 #List all medias
+    List account                #List all account
+    List upper followings       #List upper followings, Cause not point [--id], list all account followings.
 "#;
 
 pub const LIST_COMMAND_INDEX: usize = 2;
