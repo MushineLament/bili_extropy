@@ -14,7 +14,7 @@ use crate::{
     command::HELP,
     components::{
         account::handle::ActiveAccounts,
-        downloadtask::{handle::InsertDownloadtaskTask, related::RelatedDownloadtaskMediasTask},
+        downloadtask::{handle::InsertDownloadtaskTask, load::LoadDownloadtaskRelatedMediasTask},
         list::handle::ListDownloadtaskTask,
     },
     console::ConsoleTrims,
@@ -82,13 +82,6 @@ pub fn spawn_list_task(
             .unwrap_or(ActiveValue::NotSet);
 
         match args.get(DOWNLOADTASK_COMMAND_INDEX).map(String::as_str) {
-            Some("related") => {
-                info!("related downloadtask and medias");
-                commands.spawn(RelatedDownloadtaskMediasTask::new(
-                    db.clone(),
-                    runtimer.as_mut(),
-                ));
-            }
             Some("insert") => {
                 let Some(r#type) = args.get(3).map(String::as_str) else {
                     error!("not a type name");
@@ -163,7 +156,7 @@ pub fn download_rule_insert_task(
 
 pub fn related_downloadtask_medias_task(
     mut commands: Commands,
-    query: Query<(&mut RelatedDownloadtaskMediasTask, Entity)>,
+    query: Query<(&mut LoadDownloadtaskRelatedMediasTask, Entity)>,
 ) {
     for (mut task, entity) in query {
         if !task.is_finished() {
@@ -171,7 +164,10 @@ pub fn related_downloadtask_medias_task(
         }
 
         match task.try_result() {
-            Ok(_result) => {
+            Ok(result) => {
+                for (mediaid, _related) in result {
+                    info!("media<{}>", mediaid);
+                }
                 info!("related downloadtask with medias");
             }
             Err(err) => {

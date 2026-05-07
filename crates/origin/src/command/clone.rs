@@ -5,7 +5,6 @@ use bevy::{
     ecs::{
         entity::Entity,
         message::MessageReader,
-        schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
     },
 };
@@ -21,7 +20,7 @@ use crate::{
             DownloadFileError, DownloadFileErrorKind, DownloadHandle, DownloadPendding,
             MediaBvidOrAid,
         },
-        downloadtask::handle::DownloadRelatedTaskId,
+        downloadtask::handle::DownloadtaskRelatedMediaId,
         status::handle::{ActiveStatus, StatusRelatedDownloadrule},
     },
     console::ConsoleTrims,
@@ -109,7 +108,7 @@ pub fn upsert_download_list(
                                         );
                                     }
 
-                                    world.world.spawn(DownloadRelatedTaskId {
+                                    world.world.spawn(DownloadtaskRelatedMediaId {
                                         id: media.aid,
                                         taskid: vec![],
                                     });
@@ -148,7 +147,7 @@ pub fn spawn_download_task(
     active_status: ResMut<ActiveStatus>,
     active_downloadrule: ResMut<ActiveDownloadrule>,
     status_related_downloadrule: ResMut<StatusRelatedDownloadrule>,
-    lists: Query<(&mut DownloadRelatedTaskId, Entity)>,
+    lists: Query<(&mut DownloadtaskRelatedMediaId, Entity)>,
 ) {
     if lists.is_empty() {
         return;

@@ -1,4 +1,7 @@
-use std::fmt::{Debug, Display};
+use std::{
+    borrow::Cow,
+    fmt::{Debug, Display},
+};
 
 use api_req::ApiCaller;
 use bevy::{
@@ -23,6 +26,7 @@ use crate::{
         downloadtask::{self, DownloadtaskActiveModel},
         media::MediaInfoSingle,
     },
+    table::ToTableRecord,
 };
 
 pub type TaskId = i64;
@@ -64,7 +68,7 @@ impl InsertDownloadtaskTask {
 
 /// 经过处理的，等待下载的最小视频单位media
 #[derive(Debug, Component, Clone)]
-pub struct DownloadRelatedTaskId {
+pub struct DownloadtaskRelatedMediaId {
     /// 唯一性去重，bvid必需经过转化为aid
     pub id: MediaAid,
 
@@ -72,7 +76,35 @@ pub struct DownloadRelatedTaskId {
     pub taskid: Vec<TaskId>,
 }
 
-impl Default for DownloadRelatedTaskId {
+impl ToTableRecord<2> for &DownloadtaskRelatedMediaId {
+    fn to_record(&self) -> [Cow<'_, str>; 2] {
+        [
+            Cow::Owned(self.id.to_string()),
+            Cow::Owned(
+                self.taskid
+                    .iter()
+                    .map(|id| format!("{} ", id.to_string()))
+                    .collect::<String>(),
+            ),
+        ]
+    }
+}
+
+impl ToTableRecord<2> for DownloadtaskRelatedMediaId {
+    fn to_record(&self) -> [Cow<'_, str>; 2] {
+        [
+            Cow::Owned(self.id.to_string()),
+            Cow::Owned(
+                self.taskid
+                    .iter()
+                    .map(|id| format!("{} ", id.to_string()))
+                    .collect::<String>(),
+            ),
+        ]
+    }
+}
+
+impl Default for DownloadtaskRelatedMediaId {
     fn default() -> Self {
         Self {
             id: -1,
@@ -81,7 +113,7 @@ impl Default for DownloadRelatedTaskId {
     }
 }
 
-impl DownloadRelatedTaskId {
+impl DownloadtaskRelatedMediaId {
     pub async fn task(db: &Db) -> Result<Vec<Self>, DownloadFileError> {
         let result = LoadDownloadtaskTask::related_all_medias(db).await?;
 
@@ -89,7 +121,7 @@ impl DownloadRelatedTaskId {
     }
 }
 
-impl DownloadPendding for DownloadRelatedTaskId {
+impl DownloadPendding for DownloadtaskRelatedMediaId {
     fn to_response(
         &self,
     ) -> impl Future<Output = anyhow::Result<MediaInfoSingle, DownloadFileError>> + Send {
@@ -118,11 +150,13 @@ impl DownloadPendding for DownloadRelatedTaskId {
 
 /// 经过处理视频待下载集合，拥有对应的taskid
 #[derive(Debug, Resource, Deref, DerefMut)]
-pub struct MediaDownloadList(pub ECSHandleResult<Vec<DownloadRelatedTaskId>, DownloadFileError>);
+pub struct MediaDownloadList(
+    pub ECSHandleResult<Vec<DownloadtaskRelatedMediaId>, DownloadFileError>,
+);
 
 impl MediaDownloadList {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move { DownloadRelatedTaskId::task(&db).await };
+        let task = async move { DownloadtaskRelatedMediaId::task(&db).await };
         let handle = runtimer.spawn_background_task(|_ctx| task);
         Self(ECSHandleResult::new(handle))
     }

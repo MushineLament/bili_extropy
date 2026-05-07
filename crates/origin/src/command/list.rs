@@ -16,7 +16,8 @@ use crate::{
         list::handle::{
             ListAccountCollectionsTask, ListAccountFollwedTask, ListAccountTask,
             ListCollectionMediasTask, ListCollectionTask, ListDownloadruleTask,
-            ListDownloadtaskMediasTask, ListDownloadtaskTask, ListMediasTask,
+            ListDownloadtaskMediasPendingDownloadTask, ListDownloadtaskMediasTask,
+            ListDownloadtaskRelatedMediasTask, ListDownloadtaskTask, ListMediasTask,
             ListStatusRelatedDownloadruleTask, ListStatusTask, ListUpperMediasTask, ListUppersTask,
         },
     },
@@ -83,6 +84,8 @@ impl Plugin for CommandListPlugin {
                 list_downloadtask_task,
                 list_downloadtask_medias_task,
                 list_upper_medias_task,
+                list_downloadtask_related_medias_task,
+                list_downloadtask_medias_pending_download_task,
             ),
         );
     }
@@ -195,6 +198,18 @@ pub fn spawn_list_task(
             },
 
             Some("task") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("pendings") => {
+                    commands.spawn(ListDownloadtaskMediasPendingDownloadTask::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                    ));
+                }
+                Some("related") => {
+                    commands.spawn(ListDownloadtaskRelatedMediasTask::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                    ));
+                }
                 Some("medias") => {
                     commands.spawn(ListDownloadtaskMediasTask::new(
                         db.clone(),
@@ -422,5 +437,37 @@ pub fn list_upper_medias_task(
 
         let table = result.iter().table_head(["media id", "upper id"]);
         info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_downloadtask_related_medias_task(
+    mut commands: Commands,
+    query: Query<(&mut ListDownloadtaskRelatedMediasTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        let table = result.values().table_head(["related id", "task id"]);
+
+        info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_downloadtask_medias_pending_download_task(
+    mut commands: Commands,
+    query: Query<(&mut ListDownloadtaskMediasPendingDownloadTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        for id in result {
+            info!("downloadtask's pending state media id<{}>", id);
+        }
     }
 }

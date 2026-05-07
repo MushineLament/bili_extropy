@@ -8,7 +8,7 @@ use bevy::{
 use bevy_tokio_tasks::TokioTasksRuntime;
 use futures::StreamExt;
 use migration::OnConflict;
-use sea_orm::{ConnectionTrait, DatabaseBackend, EntityTrait, IntoActiveModel, Statement};
+use sea_orm::{EntityTrait, IntoActiveModel};
 use tracing::{debug, error, info};
 
 use crate::{
@@ -590,55 +590,5 @@ impl FetchUpperCollectionTask {
         });
 
         state.map(|state| (cid, state))
-    }
-}
-
-/// 拉取downloadtask_medias下的所有视频信息到数据库
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchDownloadtaskMediasTask(pub ECSHandleResult<Vec<MediaAid>, anyhow::Error>);
-
-impl FetchDownloadtaskMediasTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime, cookies: String) -> Self {
-        let handle = runtimer.spawn_background_task(move |_ctx| async move {
-            let querys = db
-                .db
-                .query_all(Statement::from_string(
-                    DatabaseBackend::Sqlite,
-                    r#"
-SELECT dt_m.media_id AS media_id
-FROM downloadtask_medias dt_m
-JOIN media m ON m.aid = dt_m.media_id
-WHERE dt_m.state IN ('Pending')
-        "#,
-                ))
-                .await?;
-
-            let pending_medias = querys
-                .into_iter()
-                .filter_map(|query| query.try_get::<i64>("", "media_id").ok())
-                .map(|media_id| {
-                    FetchMediaTask::task(db.clone(), MediaUniqueId::Aid(media_id), cookies.clone())
-                });
-
-            let mut media_unique_ids = vec![];
-
-            for pending in pending_medias {
-                match pending.await {
-                    Ok((result, _state)) => media_unique_ids.push(result),
-                    Err(err) => {
-                        error!(
-                            "fetch media error: {:?}, caller: {:?}",
-                            err,
-                            MaybeLocation::caller()
-                        );
-                        continue;
-                    }
-                }
-            }
-
-            Ok(media_unique_ids)
-        });
-
-        Self(ECSHandleResult::new(handle))
     }
 }

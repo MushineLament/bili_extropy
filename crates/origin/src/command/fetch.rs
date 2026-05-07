@@ -10,7 +10,7 @@ use bevy::{
 
 use bevy_tokio_tasks::TokioTasksRuntime;
 
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, QueryFilter};
 use tracing::{error, info};
 
 use crate::{
@@ -18,19 +18,20 @@ use crate::{
     components::{
         account::handle::ActiveAccounts,
         download::{MediaBvidOrAid, MediaUniqueId},
+        downloadtask::load::LoadDownloadtaskRelatedMediasTask,
         fetch::{
             handle::FetchPendingMediaId,
             task::{
                 FetchAccountCollectionIdTask, FetchAccountFollowingTask, FetchCollectMediasTask,
-                FetchDownloadtaskMediasTask, FetchMediaTask, FetchUpperCollectionTask,
-                FetchUpperFollowingTask, FetchUpperMediasTask,
+                FetchMediaTask, FetchUpperCollectionTask, FetchUpperFollowingTask,
+                FetchUpperMediasTask,
             },
         },
         list::load::LoadMediasTask,
     },
     console::ConsoleTrims,
     db::Db,
-    entity::media::{self, MediaEntity},
+    entity::media::{self},
 };
 
 pub const HELP_FETCH: &str = r#"
@@ -86,7 +87,6 @@ impl Plugin for CommandFetchPlugin {
                 fetch_upper_medias_task,
                 fetch_collect_medias_task,
                 fetch_media_task,
-                fetch_downloadtask_medias_task,
                 fetch_pending_media_id,
             ),
         );
@@ -252,12 +252,12 @@ pub fn spawn_fetch_task(
             },
 
             Some("task") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
-                Some("medias") => {
-                    info!("spawn fetch downloadtask's medias infomation");
-                    commands.spawn(FetchDownloadtaskMediasTask::new(
+                Some("medias") => {}
+                Some("all") => {
+                    info!("related downloadtask and medias");
+                    commands.spawn(LoadDownloadtaskRelatedMediasTask::new(
                         db.clone(),
                         runtimer.as_mut(),
-                        cookies.to_string(),
                     ));
                 }
                 Some(unkown) => {
@@ -303,6 +303,7 @@ pub fn spawn_fetch_task(
                     }
                 }
             }
+
             Some(help) if help.to_lowercase().eq(HELP) => {
                 error!("\n{}", help);
             }
@@ -485,31 +486,6 @@ pub fn fetch_upper_medias_task(
             }
             Err(err) => {
                 error!("fetch upper medias error:{:?}", err);
-            }
-        }
-    }
-}
-
-pub fn fetch_downloadtask_medias_task(
-    mut commands: Commands,
-    query: Query<(&mut FetchDownloadtaskMediasTask, Entity)>,
-) {
-    for (mut handle, entity) in query {
-        if !handle.is_finished() {
-            continue;
-        }
-
-        commands.entity(entity).try_despawn();
-
-        match handle.try_result() {
-            Ok(mediaaids) => {
-                for id in mediaaids {
-                    info!("fetch downloadtask's medias, list: {}", id);
-                }
-                info!("fetchdownloadtask's media finished");
-            }
-            Err(err) => {
-                error!("fetch downloadtask's medias error:{:?}", err);
             }
         }
     }

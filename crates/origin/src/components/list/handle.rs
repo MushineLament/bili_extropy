@@ -8,7 +8,10 @@ use sea_orm::EntityTrait as _;
 use crate::{
     components::{
         account::load::LoadAccountCollectionsTask,
-        downloadtask::load::{LoadDownloadtaskMediasTask, LoadDownloadtaskTask},
+        downloadtask::load::{
+            LoadDownloadtaskMediasPendingDownloadTask, LoadDownloadtaskMediasTask,
+            LoadDownloadtaskRelatedMediasTask, LoadDownloadtaskTask,
+        },
         fetch::handle::LoadUpperMediasTask,
         handle::ECSHandleResult,
         list::load::LoadMediasTask,
@@ -177,5 +180,23 @@ pub struct ListUppersTask(pub LoadUppersTask);
 impl ListUppersTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         Self(LoadUppersTask::new(db, runtimer))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListDownloadtaskRelatedMediasTask(pub LoadDownloadtaskRelatedMediasTask);
+
+impl ListDownloadtaskRelatedMediasTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        Self(LoadDownloadtaskRelatedMediasTask::new(db, runtimer))
+    }
+}
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct ListDownloadtaskMediasPendingDownloadTask(pub LoadDownloadtaskMediasPendingDownloadTask);
+
+impl ListDownloadtaskMediasPendingDownloadTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        Self(LoadDownloadtaskMediasPendingDownloadTask::new(db, runtimer))
     }
 }
