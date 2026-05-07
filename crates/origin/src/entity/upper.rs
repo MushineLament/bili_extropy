@@ -11,8 +11,8 @@ use crate::{entity::UpperCid, table::ToTableRecord};
 pub const UPPER: &str = "Upper";
 
 // ========== 向后兼容别名 ==========
-pub use Entity as UpperEntity;
-pub use Model as UpperModel;
+pub type UpperEntity = Entity;
+pub type UpperModel = Model;
 
 // ========== 实体模型 ==========
 

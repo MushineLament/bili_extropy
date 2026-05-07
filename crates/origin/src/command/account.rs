@@ -13,7 +13,7 @@ use tracing::{error, info};
 use crate::{
     command::HELP,
     components::{
-        auth::handle::{ActiveAccounts, AuthLoginTask},
+        account::handle::{ActiveAccounts, AuthLoginTask},
         initialize::DbInitailizeResource,
     },
     console::ConsoleTrims,

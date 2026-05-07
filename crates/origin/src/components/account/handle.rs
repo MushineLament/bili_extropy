@@ -112,13 +112,35 @@ impl ActiveAccounts {
         }))
     }
 
-    pub fn ids_mut(&mut self) -> Vec<i64> {
+    pub fn ids_mut(&mut self) -> impl IntoIterator<Item = i64> {
         self.try_result()
-            .iter()
+            .into_iter()
             .map(|result| result.iter())
             .flatten()
             .map(|account| account.account_id)
-            .collect::<Vec<_>>()
+    }
+
+    pub fn cookies_mut(&mut self) -> impl IntoIterator<Item = &str> {
+        self.try_result()
+            .into_iter()
+            .map(|result| result.iter())
+            .flatten()
+            .map(|account| account.cookies.as_str())
+    }
+
+    pub fn get_first_cookies_mut(&mut self) -> Option<&str> {
+        self.cookies_mut().into_iter().next()
+    }
+
+    pub fn models_mut(&mut self) -> impl IntoIterator<Item = &AccountModel> {
+        self.try_result()
+            .into_iter()
+            .map(|result| result.iter())
+            .flatten()
+    }
+
+    pub fn get_first_models_mut(&mut self) -> Option<&AccountModel> {
+        self.models_mut().into_iter().next()
     }
 }
 

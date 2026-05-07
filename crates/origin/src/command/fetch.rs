@@ -1,30 +1,36 @@
 use bevy::{
-    app::{Plugin, Update},
+    app::{Plugin, PreUpdate, Update},
     ecs::{
         entity::Entity,
         message::MessageReader,
-        schedule::IntoScheduleConfigs,
+        query::With,
         system::{Commands, Query, Res, ResMut},
     },
 };
 
 use bevy_tokio_tasks::TokioTasksRuntime;
 
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use tracing::{error, info};
 
 use crate::{
     command::HELP,
     components::{
-        auth::handle::ActiveAccounts,
-        download::DownloadWay,
-        fetch::task::{
-            FetchAccountCollectionIdData, FetchAccountFollowingData, FetchCollectMediasData,
-            FetchMediaData, FetchUpperCollectionData, FetchUpperFollowingData,
-            FetchUpperMediasData,
+        account::handle::ActiveAccounts,
+        download::{MediaBvidOrAid, MediaUniqueId},
+        fetch::{
+            handle::FetchPendingMediaId,
+            task::{
+                FetchAccountCollectionIdTask, FetchAccountFollowingTask, FetchCollectMediasTask,
+                FetchDownloadtaskMediasTask, FetchMediaTask, FetchUpperCollectionTask,
+                FetchUpperFollowingTask, FetchUpperMediasTask,
+            },
         },
+        list::load::LoadMediasTask,
     },
     console::ConsoleTrims,
     db::Db,
+    entity::media::{self, MediaEntity},
 };
 
 pub const HELP_FETCH: &str = r#"
@@ -38,9 +44,9 @@ Commands:
         collections                 Fetch account's collections list.
 
     upper                       Fetch data related to an Upper.
-        followings [--id]           Fetch upper's followed list.if not point id, default use account's id. 
-        collections [--id]          Fetch upper's collection list.if not point id, default use account's id. 
-        medias [--id]               Fetch upper's media list.if not point id, default use account's id. 
+        followings [--id]           Fetch upper's followed list. If not point id, default use account's id. 
+        collections [--id]          Fetch upper's collection list. If not point id, default use account's id. 
+        medias [--id]               Fetch upper's media list. If not point id, default use account's id. 
 
     collection                  Fetch data related to a Collection.
         medias                      Fetch collection's media list.
@@ -70,20 +76,18 @@ pub struct CommandFetchPlugin;
 
 impl Plugin for CommandFetchPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(
+        app.add_systems(PreUpdate, spawn_fetch_task).add_systems(
             Update,
             (
-                spawn_fetch_task,
-                (
-                    fetch_account_following_data,
-                    fetch_account_collection_id_data,
-                    fetch_upper_following_data,
-                    fetch_upper_collection_data,
-                    fetch_upper_medias_data,
-                    fetch_collect_medias_data,
-                    fetch_media_data,
-                )
-                    .after(spawn_fetch_task),
+                fetch_account_following_task,
+                fetch_account_collection_id_task,
+                fetch_upper_following_task,
+                fetch_upper_collection_task,
+                fetch_upper_medias_task,
+                fetch_collect_medias_task,
+                fetch_media_task,
+                fetch_downloadtask_medias_task,
+                fetch_pending_media_id,
             ),
         );
     }
@@ -96,6 +100,19 @@ pub fn spawn_fetch_task(
     mut runtimer: ResMut<TokioTasksRuntime>,
     mut active_account: ResMut<ActiveAccounts>,
 ) {
+    if console_message.is_empty() {
+        return;
+    }
+
+    let account_ids = active_account.ids_mut().into_iter().collect::<Vec<_>>();
+
+    let Some(account_model) = active_account.get_first_models_mut().cloned() else {
+        error!("not any active account");
+        return;
+    };
+
+    let cookies = account_model.cookies.as_str();
+
     for message in console_message.read() {
         // let db = db.clone();
         let ConsoleTrims { args, argv: _ } = message;
@@ -111,7 +128,7 @@ pub fn spawn_fetch_task(
             .collect::<Vec<_>>();
 
         let ids = if point_id.is_empty() {
-            active_account.ids_mut().into_iter().collect::<Vec<_>>()
+            account_ids.clone()
         } else {
             point_id
         };
@@ -121,131 +138,35 @@ pub fn spawn_fetch_task(
             continue;
         }
 
-        let Ok(accounts) = active_account.try_result() else {
-            error!("not any active account");
-            continue;
-        };
-
         match args.get(FETCH_COMMAND_INDEX).map(String::as_str) {
             // 上述有问题
-            Some("account") => {
-                let accounts = accounts
-                    .iter()
-                    .filter(|model| ids.contains(&model.account_id));
-
-                match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
-                    Some("followings") => {
-                        commands.spawn_batch(
-                            accounts
-                                .map(|account| {
-                                    FetchAccountFollowingData::new(
-                                        db.clone(),
-                                        account.clone(),
-                                        runtimer.as_mut(),
-                                    )
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-                    Some("collections") => {
-                        commands.spawn_batch(
-                            accounts
-                                .map(|account| {
-                                    FetchAccountCollectionIdData::new(
-                                        db.clone(),
-                                        account.clone(),
-                                        runtimer.as_mut(),
-                                    )
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-                    Some(unkown) => {
-                        error!("not has this command: {:?}", unkown);
-                    }
-                    None => {}
-                }
-            }
-            Some("upper") => {
-                let cookies = accounts.first().map(|model| model.cookies.clone());
-
-                match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
-                    Some("followings") => {
-                        commands.spawn_batch(
-                            ids.into_iter()
-                                .map(|id| {
-                                    info!("Fetching upper following with id<{}>", id);
-
-                                    FetchUpperFollowingData::new(
-                                        db.clone(),
-                                        id,
-                                        runtimer.as_mut(),
-                                        cookies.clone(),
-                                    )
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-                    Some("collections") => {
-                        commands.spawn_batch(
-                            ids.into_iter()
-                                .map(|id| {
-                                    FetchUpperCollectionData::new(
-                                        db.clone(),
-                                        runtimer.as_mut(),
-                                        id,
-                                        cookies.clone(),
-                                    )
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-
-                    Some("medias") => {
-                        let Ok(result) = active_account.try_result() else {
-                            continue;
-                        };
-
-                        let Some(cookies) = result.first().map(|first| first.cookies.clone())
-                        else {
-                            error!("not any active account");
-                            continue;
-                        };
-
-                        commands.spawn_batch(
-                            ids.into_iter()
-                                .map(|id| {
-                                    FetchUpperMediasData::new(
-                                        db.clone(),
-                                        id,
-                                        runtimer.as_mut(),
-                                        cookies.clone(),
-                                    )
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-
-                    Some(unkown) => {
-                        error!("not has this command: {:?}", unkown);
-                    }
-                    None => {}
-                }
-            }
-            Some("collection") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
-                Some("medias") => {
-                    let _cookies = accounts.iter().map(|model| {
-                        info!(
-                            "Fetching collection ids<{:?}> with account<{:?}>",
-                            ids, model.account_id
-                        );
-                        model.cookies.clone()
-                    });
-
+            Some("account") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("followings") => {
                     commands.spawn_batch(
-                        ids.into_iter()
-                            .map(|id| {
-                                FetchCollectMediasData::new(db.clone(), id, runtimer.as_mut())
+                        active_account
+                            .models_mut()
+                            .into_iter()
+                            .map(|account| {
+                                FetchAccountFollowingTask::new(
+                                    db.clone(),
+                                    account.clone(),
+                                    runtimer.as_mut(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Some("collections") => {
+                    commands.spawn_batch(
+                        active_account
+                            .models_mut()
+                            .into_iter()
+                            .map(|account| {
+                                FetchAccountCollectionIdTask::new(
+                                    db.clone(),
+                                    account.clone(),
+                                    runtimer.as_mut(),
+                                )
                             })
                             .collect::<Vec<_>>(),
                     );
@@ -254,6 +175,97 @@ pub fn spawn_fetch_task(
                     error!("not has this command: {:?}", unkown);
                 }
                 None => {}
+            },
+            Some("upper") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("followings") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                info!("Fetching upper following with id<{}>", id);
+
+                                FetchUpperFollowingTask::new(
+                                    db.clone(),
+                                    id,
+                                    runtimer.as_mut(),
+                                    cookies.to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Some("collections") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                info!("spawn fetch upper<{}>'s collection task", id);
+                                FetchUpperCollectionTask::new(
+                                    db.clone(),
+                                    runtimer.as_mut(),
+                                    id,
+                                    cookies.to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+
+                Some("medias") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                info!("spawn fetch upper<{}>'s medias task", id);
+                                FetchUpperMediasTask::new(
+                                    db.clone(),
+                                    id,
+                                    runtimer.as_mut(),
+                                    cookies.to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {}
+            },
+            Some("collection") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("medias") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                FetchCollectMediasTask::new(
+                                    db.clone(),
+                                    id,
+                                    runtimer.as_mut(),
+                                    cookies.to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {}
+            },
+
+            Some("task") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("medias") => {
+                    info!("spawn fetch downloadtask's medias infomation");
+                    commands.spawn(FetchDownloadtaskMediasTask::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                        cookies.to_string(),
+                    ));
+                }
+                Some(unkown) => {
+                    error!("not has this subcommand: {:?}", unkown);
+                }
+                None => {
+                    error!("not any subcommand");
+                }
             },
 
             Some("media") => {
@@ -279,10 +291,11 @@ pub fn spawn_fetch_task(
                             bvids
                                 .into_iter()
                                 .map(|bvid| {
-                                    FetchMediaData::new(
+                                    FetchMediaTask::new(
                                         db.clone(),
-                                        DownloadWay(bvid),
+                                        MediaBvidOrAid(bvid).parse(),
                                         runtimer.as_mut(),
+                                        cookies.to_string(),
                                     )
                                 })
                                 .collect::<Vec<_>>(),
@@ -303,9 +316,9 @@ pub fn spawn_fetch_task(
     }
 }
 
-pub fn fetch_upper_collection_data(
+pub fn fetch_upper_collection_task(
     mut commands: Commands,
-    query: Query<(&mut FetchUpperCollectionData, Entity)>,
+    query: Query<(&mut FetchUpperCollectionTask, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -328,9 +341,9 @@ pub fn fetch_upper_collection_data(
     }
 }
 
-pub fn fetch_account_collection_id_data(
+pub fn fetch_account_collection_id_task(
     mut commands: Commands,
-    query: Query<(&mut FetchAccountCollectionIdData, Entity)>,
+    query: Query<(&mut FetchAccountCollectionIdTask, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -353,9 +366,9 @@ pub fn fetch_account_collection_id_data(
     }
 }
 
-pub fn fetch_upper_following_data(
+pub fn fetch_upper_following_task(
     mut commands: Commands,
-    query: Query<(&mut FetchUpperFollowingData, Entity)>,
+    query: Query<(&mut FetchUpperFollowingTask, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -378,9 +391,9 @@ pub fn fetch_upper_following_data(
     }
 }
 
-pub fn fetch_account_following_data(
+pub fn fetch_account_following_task(
     mut commands: Commands,
-    query: Query<(&mut FetchAccountFollowingData, Entity)>,
+    query: Query<(&mut FetchAccountFollowingTask, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -403,9 +416,9 @@ pub fn fetch_account_following_data(
     }
 }
 
-pub fn fetch_collect_medias_data(
+pub fn fetch_collect_medias_task(
     mut commands: Commands,
-    query: Query<(&mut FetchCollectMediasData, Entity)>,
+    query: Query<(&mut FetchCollectMediasTask, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -428,43 +441,157 @@ pub fn fetch_collect_medias_data(
     }
 }
 
-pub fn fetch_media_data(mut commands: Commands, query: Query<(&mut FetchMediaData, Entity)>) {
-    for (mut handle, entity) in query {
-        if !handle.is_finished() {
-            continue;
-        }
-
-        commands.entity(entity).try_despawn();
-
-        match handle.try_result() {
-            Ok((cid, state)) => {
-                info!("fetch media<{}> is finished,state:{}", cid.0, state);
-            }
-            Err(err) => {
-                error!("fetch upper collection error:{:?}", err);
-            }
-        }
-    }
-}
-
-pub fn fetch_upper_medias_data(
+pub fn fetch_upper_medias_task(
     mut commands: Commands,
-    query: Query<(&mut FetchUpperMediasData, Entity)>,
+    query: Query<(&mut FetchUpperMediasTask, Entity)>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
             continue;
         }
 
+        let upper_id = handle.upper_cid;
+        let fetch_medias = handle.fetch_medias;
+
         commands.entity(entity).try_despawn();
 
         match handle.try_result() {
             Ok((cid, state)) => {
-                info!("fetch upper<{}>'s medias is finished,state:{}", cid, state);
+                info!(
+                    "fetch upper<{}>'s medias is finished,state:{}",
+                    upper_id, state
+                );
+
+                if fetch_medias {
+                    let fetchs = cid
+                        .iter()
+                        .map(|media_id| {
+                            let media_id = *media_id;
+                            (
+                                FetchPendingMediaId(media_id),
+                                LoadMediasTask::new_with(
+                                    db.clone(),
+                                    runtimer.as_mut(),
+                                    move |select| select.filter(media::Column::Aid.eq(media_id)),
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(fetchs);
+                }
             }
             Err(err) => {
                 error!("fetch upper medias error:{:?}", err);
             }
         }
+    }
+}
+
+pub fn fetch_downloadtask_medias_task(
+    mut commands: Commands,
+    query: Query<(&mut FetchDownloadtaskMediasTask, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok(mediaaids) => {
+                for id in mediaaids {
+                    info!("fetch downloadtask's medias, list: {}", id);
+                }
+                info!("fetchdownloadtask's media finished");
+            }
+            Err(err) => {
+                error!("fetch downloadtask's medias error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_media_task(mut commands: Commands, query: Query<(&mut FetchMediaTask, Entity)>) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!("fetch media<{}> is finished,state:{}", *cid, state);
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_pending_media_id(
+    mut commands: Commands,
+    mut pending_fetchs: Query<(
+        &mut FetchPendingMediaId,
+        Option<&mut LoadMediasTask>, //check befor fetch
+        Entity,
+    )>,
+    fetching: Query<(), With<FetchMediaTask>>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+    mut active_account: ResMut<ActiveAccounts>,
+) {
+    if pending_fetchs.count() <= 0 {
+        return;
+    }
+
+    let count = fetching.count();
+
+    let Some(sub) = 4usize.checked_sub(count).filter(|sub| *sub != 0) else {
+        return;
+    };
+
+    let Some(cookies) = active_account.get_first_cookies_mut() else {
+        error!("not any active account, fetch media failed");
+        return;
+    };
+
+    let mut iter = pending_fetchs.iter_mut();
+
+    let pendings = (0..sub).map(|_| iter.next()).filter_map(|pending| pending);
+
+    for (fetch, load, entity) in pendings {
+        if let Some(mut result) = load {
+            match result.try_result() {
+                Ok(result) => {
+                    if result.iter().find(|model| model.aid == fetch.0).is_some() {
+                        commands.entity(entity).try_despawn();
+                        continue;
+                    }
+                }
+                Err(err) => {
+                    if !err.is_finished() {
+                        continue;
+                    }
+                }
+            };
+        }
+
+        commands.spawn(FetchMediaTask::new(
+            db.clone(),
+            MediaUniqueId::Aid(fetch.0),
+            runtimer.as_mut(),
+            cookies.to_string(),
+        ));
+        commands.entity(entity).try_despawn();
+    }
+
+    if pending_fetchs.count() < 4 && fetching.count() < 4 {
+        info!("fetch media taks all is finished");
     }
 }

@@ -8,19 +8,19 @@ use bevy::{
 use bevy_tokio_tasks::TokioTasksRuntime;
 use futures::StreamExt;
 use migration::OnConflict;
-use sea_orm::{EntityTrait, IntoActiveModel};
+use sea_orm::{ConnectionTrait, DatabaseBackend, EntityTrait, IntoActiveModel, Statement};
 use tracing::{debug, error, info};
 
 use crate::{
     api::BiliApi,
     components::{
-        download::{DownloadPendding, DownloadWay},
+        download::{DownloadPendding, MediaUniqueId},
         handle::ECSHandleResult,
     },
     cookies::{add_cookie_jar, parse_cookies},
     db::Db,
     entity::{
-        CollectionId, UpperCid,
+        CollectionId, MediaAid, UpperCid,
         account::AccountModel,
         account_collection,
         collection::{
@@ -41,23 +41,35 @@ use crate::{
     },
 };
 
-/// 获取upperid下的所有mediacid
+/// get upper's all media ids.return is current online upper's media ids.
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchUpperMediasData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchUpperMediasTask {
+    /// Is alse fetch media into sql database;
+    pub upper_cid: UpperCid,
+    pub fetch_medias: bool,
+    #[deref]
+    pub handle: ECSHandleResult<(Vec<MediaAid>, u64), anyhow::Error>,
+}
 
-impl FetchUpperMediasData {
+impl FetchUpperMediasTask {
     #[track_caller]
     pub fn new(db: Db, id: UpperCid, runtimer: &mut TokioTasksRuntime, cookies: String) -> Self {
         let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, id, cookies));
 
-        Self(ECSHandleResult::new(task))
+        Self {
+            upper_cid: id,
+            fetch_medias: true,
+            handle: ECSHandleResult::new(task),
+        }
     }
 
     pub async fn task(
         db: Db,
         cid: UpperCid,
         cookies: String,
-    ) -> Result<(UpperCid, u64), anyhow::Error> {
+    ) -> Result<(Vec<MediaAid>, u64), anyhow::Error> {
+        add_cookie_jar(parse_cookies(&cookies));
+
         let PublishNumResp {
             data: PublishNumData { video },
         } = BiliApi::request(PublishNumPayload { mid: cid })
@@ -70,8 +82,9 @@ impl FetchUpperMediasData {
                 );
                 err
             })?;
+
         if video == 0 {
-            return Ok((cid, 0));
+            return Ok((vec![], 0));
         }
 
         // info!("Fetching published videos of up<{}>", up.name);
@@ -80,8 +93,6 @@ impl FetchUpperMediasData {
         let mut medias = vec![];
 
         for pn in 1..=page {
-            add_cookie_jar(parse_cookies(&cookies));
-
             let Ok(up_payload) = InUpPayload::new(cid, pn, 30)
                 .await
                 .map_err(|err| info!("Failed to fetch up, cuase wbi get error:{:?}", err))
@@ -100,17 +111,20 @@ impl FetchUpperMediasData {
                 continue;
             };
 
-            medias.extend(vlist);
-        }
-
-        let state = upper_media::UpperMediaEntity::insert_many(medias.into_iter().map(|m| {
-            // debug!("Linking media<{}> and up<{}>", m.title, up.name);
-            upper_media::UpperMediaModel {
+            medias.extend(vlist.into_iter().map(|m| upper_media::UpperMediaModel {
                 media_id: m.id,
                 upper_id: cid,
-            }
-            .into_active_model()
-        }))
+            }));
+        }
+
+        let upper_medias = medias
+            .iter()
+            .map(|model| model.media_id)
+            .collect::<Vec<MediaAid>>();
+
+        let state = upper_media::UpperMediaEntity::insert_many(
+            medias.into_iter().map(|m| m.into_active_model()),
+        )
         .on_conflict(
             OnConflict::columns([upper_media::Column::MediaId, upper_media::Column::UpperId])
                 .update_columns([upper_media::Column::MediaId, upper_media::Column::UpperId])
@@ -127,36 +141,44 @@ impl FetchUpperMediasData {
             )
         });
 
-        state.map(|state| (cid, state))
+        state.map(|state| (upper_medias, state))
     }
 }
 
-/// 获取收藏夹id下的所有mediacid
+/// fetch media infomation into sql.
+/// don't create too more, or will get bilibili request ban some hours time.
+/// only support request one for avoid request ban.
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchMediaData(pub ECSHandleResult<(DownloadWay, u64), anyhow::Error>);
+pub struct FetchMediaTask(pub ECSHandleResult<(MediaAid, u64), anyhow::Error>);
 
-impl FetchMediaData {
+impl FetchMediaTask {
     #[track_caller]
-    pub fn new(db: Db, id: DownloadWay, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task =
-            runtimer.spawn_background_task(move |_ctx| Self::task(db, id, MaybeLocation::caller()));
+    pub fn new(
+        db: Db,
+        id: MediaUniqueId,
+        runtimer: &mut TokioTasksRuntime,
+        cookies: String,
+    ) -> Self {
+        let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, id, cookies));
 
         Self(ECSHandleResult::new(task))
     }
 
-    pub async fn task(
+    pub async fn task<T: DownloadPendding + Send + 'static>(
         db: Db,
-        id: DownloadWay,
-        caller: MaybeLocation,
-    ) -> Result<(DownloadWay, u64), anyhow::Error> {
+        id: T,
+        cookies: String,
+    ) -> Result<(MediaAid, u64), anyhow::Error> {
+        add_cookie_jar(parse_cookies(&cookies));
+
         let Ok(MediaInfoSingle {
             data: Some(media), ..
         }) = id.to_response().await
         else {
             return Err(anyhow::anyhow!(
-                "fetch single media error,id<{:?}>,caller{:?}",
-                id.0,
-                caller
+                "fetch single media error,id<{}>,caller{:?}, maybe media page not exist or can't read",
+                id.massage(),
+                MaybeLocation::caller()
             ));
         };
 
@@ -185,25 +207,29 @@ impl FetchMediaData {
         .await
         .map_err(|err| {
             anyhow::anyhow!(
-                "can't not upsert media<{:?}> in to table, error:{:?}",
-                id,
+                "can't not upsert media<{}> in to table, error:{:?}",
+                id.massage(),
                 err
             )
         });
 
-        state.map(|state| (id, state))
+        state.map(|state| (media.aid, state))
     }
 }
 
 /// 获取收藏夹id下的所有mediacid
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchCollectMediasData(pub ECSHandleResult<(CollectionId, u64), anyhow::Error>);
+pub struct FetchCollectMediasTask(pub ECSHandleResult<(CollectionId, u64), anyhow::Error>);
 
-impl FetchCollectMediasData {
+impl FetchCollectMediasTask {
     #[track_caller]
-    pub fn new(db: Db, id: CollectionId, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task =
-            runtimer.spawn_background_task(move |_ctx| Self::task(db, id, MaybeLocation::caller()));
+    pub fn new(
+        db: Db,
+        id: CollectionId,
+        runtimer: &mut TokioTasksRuntime,
+        cookies: String,
+    ) -> Self {
+        let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, id, cookies));
 
         Self(ECSHandleResult::new(task))
     }
@@ -211,8 +237,10 @@ impl FetchCollectMediasData {
     pub async fn task(
         db: Db,
         id: CollectionId,
-        caller: MaybeLocation,
+        cookies: String,
     ) -> Result<(CollectionId, u64), anyhow::Error> {
+        add_cookie_jar(parse_cookies(&cookies));
+
         let Some(model) = collection::CollectionEntity::find_by_id(id)
             .one(&db.db)
             .await?
@@ -265,7 +293,7 @@ impl FetchCollectMediasData {
                     "insert many accountcollectid error: {:?}, collectonid<{:?}>, caller:{:?}",
                     err,
                     model.collection_id,
-                    caller
+                    MaybeLocation::caller()
                 )
             });
 
@@ -275,9 +303,9 @@ impl FetchCollectMediasData {
 
 /// 获取登录账户与关注uppercid的关系
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchAccountFollowingData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchAccountFollowingTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-impl FetchAccountFollowingData {
+impl FetchAccountFollowingTask {
     #[track_caller]
     pub fn new(db: Db, model: AccountModel, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = runtimer.spawn_background_task(|_ctx| Self::task(db, model));
@@ -365,19 +393,12 @@ impl FetchAccountFollowingData {
 
 /// 获取uppercid用户关注的up列表
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchUpperFollowingData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchUpperFollowingTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-impl FetchUpperFollowingData {
+impl FetchUpperFollowingTask {
     #[track_caller]
-    pub fn new(
-        db: Db,
-        cid: UpperCid,
-        runtimer: &mut TokioTasksRuntime,
-        cookies: Option<String>,
-    ) -> Self {
-        let task = runtimer.spawn_background_task(move |_ctx| {
-            Self::task(db, cid, cookies, MaybeLocation::caller())
-        });
+    pub fn new(db: Db, cid: UpperCid, runtimer: &mut TokioTasksRuntime, cookies: String) -> Self {
+        let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, cid, cookies));
 
         Self(ECSHandleResult::new(task))
     }
@@ -385,12 +406,9 @@ impl FetchUpperFollowingData {
     pub async fn task(
         db: Db,
         cid: UpperCid,
-        cookies: Option<String>,
-        caller: MaybeLocation,
+        cookies: String,
     ) -> Result<(UpperCid, u64), anyhow::Error> {
-        if let Some(cookies) = cookies {
-            crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&cookies));
-        }
+        add_cookie_jar(parse_cookies(&cookies));
 
         info!("Fetching following with upper<{}>", cid);
 
@@ -448,7 +466,7 @@ impl FetchUpperFollowingData {
                 "insert many accountcollectid error: {:?}, account_id<{:?}>, caller:{:?}",
                 err,
                 cid,
-                caller
+                MaybeLocation::caller()
             )
         });
 
@@ -458,9 +476,9 @@ impl FetchUpperFollowingData {
 
 /// 更新数据库中的登录账户与收藏夹id的对应关系
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchAccountCollectionIdData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchAccountCollectionIdTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-impl FetchAccountCollectionIdData {
+impl FetchAccountCollectionIdTask {
     #[track_caller]
     pub fn new(db: Db, model: AccountModel, runtimer: &mut TokioTasksRuntime) -> Self {
         let task: tokio::task::JoinHandle<Result<(i64, u64), anyhow::Error>> =
@@ -521,15 +539,10 @@ impl FetchAccountCollectionIdData {
 
 /// 更新数据库中的uppercid用户下的所有收藏夹信息
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchUpperCollectionData(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchUpperCollectionTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-impl FetchUpperCollectionData {
-    pub fn new(
-        db: Db,
-        runtimer: &mut TokioTasksRuntime,
-        cid: UpperCid,
-        cookies: Option<String>,
-    ) -> Self {
+impl FetchUpperCollectionTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime, cid: UpperCid, cookies: String) -> Self {
         let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, cid, cookies));
 
         Self(ECSHandleResult::new(task))
@@ -538,12 +551,9 @@ impl FetchUpperCollectionData {
     pub async fn task(
         db: Db,
         cid: UpperCid,
-        cookies: Option<String>,
+        cookies: String,
     ) -> Result<(UpperCid, u64), anyhow::Error> {
-        debug!("cookies:{:?}", cookies);
-        if let Some(cookies) = cookies {
-            crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&cookies));
-        }
+        crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&cookies));
 
         let Ok(ListUpperCollectResp {
             data: ListUpperCollectData { list },
@@ -580,5 +590,55 @@ impl FetchUpperCollectionData {
         });
 
         state.map(|state| (cid, state))
+    }
+}
+
+/// 拉取downloadtask_medias下的所有视频信息到数据库
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct FetchDownloadtaskMediasTask(pub ECSHandleResult<Vec<MediaAid>, anyhow::Error>);
+
+impl FetchDownloadtaskMediasTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime, cookies: String) -> Self {
+        let handle = runtimer.spawn_background_task(move |_ctx| async move {
+            let querys = db
+                .db
+                .query_all(Statement::from_string(
+                    DatabaseBackend::Sqlite,
+                    r#"
+SELECT dt_m.media_id AS media_id
+FROM downloadtask_medias dt_m
+JOIN media m ON m.aid = dt_m.media_id
+WHERE dt_m.state IN ('Pending')
+        "#,
+                ))
+                .await?;
+
+            let pending_medias = querys
+                .into_iter()
+                .filter_map(|query| query.try_get::<i64>("", "media_id").ok())
+                .map(|media_id| {
+                    FetchMediaTask::task(db.clone(), MediaUniqueId::Aid(media_id), cookies.clone())
+                });
+
+            let mut media_unique_ids = vec![];
+
+            for pending in pending_medias {
+                match pending.await {
+                    Ok((result, _state)) => media_unique_ids.push(result),
+                    Err(err) => {
+                        error!(
+                            "fetch media error: {:?}, caller: {:?}",
+                            err,
+                            MaybeLocation::caller()
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            Ok(media_unique_ids)
+        });
+
+        Self(ECSHandleResult::new(handle))
     }
 }

@@ -13,9 +13,9 @@ use tracing::{error, info};
 use crate::{
     command::HELP,
     components::{
-        auth::handle::ActiveAccounts,
-        downloadtask::{handle::InsertDownloadtaskTask, load::LoadDownloadtaskTask},
-        list::handle::ListDownloadruleTask,
+        account::handle::ActiveAccounts,
+        downloadtask::{handle::InsertDownloadtaskTask, related::RelatedDownloadtaskMediasTask},
+        list::handle::ListDownloadtaskTask,
     },
     console::ConsoleTrims,
     db::Db,
@@ -51,8 +51,10 @@ pub struct CommandDownloadtaskPlugin;
 
 impl Plugin for CommandDownloadtaskPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(PreUpdate, spawn_list_task)
-            .add_systems(Update, (download_rule_insert_task,));
+        app.add_systems(PreUpdate, spawn_list_task).add_systems(
+            Update,
+            (download_rule_insert_task, related_downloadtask_medias_task),
+        );
     }
 }
 
@@ -80,19 +82,12 @@ pub fn spawn_list_task(
             .unwrap_or(ActiveValue::NotSet);
 
         match args.get(DOWNLOADTASK_COMMAND_INDEX).map(String::as_str) {
-            Some("start") => {
-                let db = db.clone();
-                runtimer.spawn_background_task(|_ctx| async move {
-                    let test = LoadDownloadtaskTask::related_all_medias(&db)
-                        .await
-                        .unwrap()
-                        .into_values();
-
-                    for related in test {
-                        info!("related:{:?}", related);
-                    }
-                    info!("打印完毕");
-                });
+            Some("related") => {
+                info!("related downloadtask and medias");
+                commands.spawn(RelatedDownloadtaskMediasTask::new(
+                    db.clone(),
+                    runtimer.as_mut(),
+                ));
             }
             Some("insert") => {
                 let Some(r#type) = args.get(3).map(String::as_str) else {
@@ -138,7 +133,7 @@ pub fn spawn_list_task(
 
             None => {
                 // 输出help
-                commands.spawn(ListDownloadruleTask::new(db.clone(), runtimer.as_mut()));
+                commands.spawn(ListDownloadtaskTask::new(db.clone(), runtimer.as_mut()));
             }
         }
     }
@@ -149,14 +144,37 @@ pub fn download_rule_insert_task(
     query: Query<(&mut InsertDownloadtaskTask, Entity)>,
 ) {
     for (mut task, entity) in query {
+        if !task.is_finished() {
+            continue;
+        }
+
         match task.try_result() {
             Ok(result) => {
                 info!("insert a task id<{}>", result);
             }
             Err(err) => {
-                if !err.is_finished() {
-                    continue;
-                }
+                error!("insert a task error: {:?}", err);
+            }
+        }
+
+        commands.entity(entity).despawn();
+    }
+}
+
+pub fn related_downloadtask_medias_task(
+    mut commands: Commands,
+    query: Query<(&mut RelatedDownloadtaskMediasTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        if !task.is_finished() {
+            continue;
+        }
+
+        match task.try_result() {
+            Ok(_result) => {
+                info!("related downloadtask with medias");
+            }
+            Err(err) => {
                 error!("insert a task error: {:?}", err);
             }
         }

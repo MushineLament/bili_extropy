@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Display};
+
 use api_req::ApiCaller;
 use bevy::{
     ecs::{component::Component, resource::Resource},
@@ -11,7 +13,7 @@ use sea_orm::EntityTrait;
 use crate::{
     api::BiliApi,
     components::{
-        download::{DownloadFileError, DownloadPendding, MediaInfoAidPayload},
+        download::{DownloadFileError, DownloadPendding, MediaInfoAidPayload, MediaUniqueId},
         downloadtask::load::LoadDownloadtaskTask,
         handle::ECSHandleResult,
     },
@@ -103,6 +105,14 @@ impl DownloadPendding for DownloadRelatedTaskId {
         _db: &Db,
     ) -> impl Future<Output = Result<Vec<TaskId>, DownloadFileError>> {
         async { Ok(self.taskid.clone()) }
+    }
+
+    fn massage(&self) -> impl Display {
+        self.id.to_string()
+    }
+
+    fn into_unique_id(self) -> MediaUniqueId {
+        MediaUniqueId::Aid(self.id)
     }
 }
 

@@ -1,7 +1,7 @@
 use std::{mem, time::Duration};
 
 use bevy::{
-    app::{Plugin, PostUpdate, Update},
+    app::{Plugin, PostUpdate, PreUpdate, Update},
     ecs::{
         entity::Entity,
         message::MessageReader,
@@ -16,9 +16,10 @@ use tracing::{error, info};
 use crate::{
     command::{HELP, downloadrule::ActiveDownloadrule},
     components::{
-        auth::handle::ActiveAccounts,
+        account::handle::ActiveAccounts,
         download::{
-            DownloadFileError, DownloadFileErrorKind, DownloadHandle, DownloadPendding, DownloadWay,
+            DownloadFileError, DownloadFileErrorKind, DownloadHandle, DownloadPendding,
+            MediaBvidOrAid,
         },
         downloadtask::handle::DownloadRelatedTaskId,
         status::handle::{ActiveStatus, StatusRelatedDownloadrule},
@@ -54,14 +55,9 @@ pub struct DownloadPlugin;
 
 impl Plugin for DownloadPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(
-            Update,
-            (
-                upsert_download_list,
-                spawn_download_task.after(upsert_download_list),
-            ),
-        )
-        .add_systems(PostUpdate, download_task_finished);
+        app.add_systems(PreUpdate, upsert_download_list)
+            .add_systems(Update, spawn_download_task)
+            .add_systems(PostUpdate, download_task_finished);
     }
 }
 
@@ -83,7 +79,7 @@ pub fn upsert_download_list(
                     continue;
                 };
 
-                let way = DownloadWay::new(media_id.to_string());
+                let way = MediaBvidOrAid::new(media_id.to_string()).parse();
                 runtimer.spawn_background_task(move |mut ctx| async move {
                     let timer = tokio::time::timeout(Duration::from_secs(3), async {
                         let infomation = way.to_response().await?;
@@ -95,8 +91,8 @@ pub fn upsert_download_list(
 
                     let Ok(result) = timer.await else {
                         error!(
-                            "add a download media<{:?}> task error, time response overflow",
-                            way.0
+                            "add a download media<{}> task error, time response overflow",
+                            way.as_str()
                         );
                         return;
                     };
@@ -121,7 +117,11 @@ pub fn upsert_download_list(
                                 .await;
                         }
                         Err(err) => {
-                            error!("add a download media<{:?}> task error: {:?}", way.0, err);
+                            error!(
+                                "add a download media<{}> task error: {:?}",
+                                way.as_str(),
+                                err
+                            );
                         }
                     }
                 });

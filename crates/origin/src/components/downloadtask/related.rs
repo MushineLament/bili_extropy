@@ -8,36 +8,33 @@ use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr, QueryFilter,
 
 use crate::{
     components::{
-        downloadtask::handle::DownloadRelatedTaskId, fetch::handle::Loadable,
+        downloadtask::{handle::DownloadRelatedTaskId, load::LoadDownloadtaskTask},
+        fetch::handle::Loadable,
         handle::ECSHandleResult,
     },
     db::Db,
     entity::{
         MediaAid,
         downloadtask::{self},
-        downloadtask_medias::{DownloadtaskMediasEntity, DownloadtaskMediasModel},
         media::MEDIA,
     },
 };
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct LoadDownloadtaskTask(
-    pub ECSHandleResult<Vec<downloadtask::DownloadtaskModel>, anyhow::Error>,
+pub struct RelatedDownloadtaskMediasTask(
+    pub ECSHandleResult<HashMap<MediaAid, DownloadRelatedTaskId>, DbErr>,
 );
 
-impl LoadDownloadtaskTask {
+impl RelatedDownloadtaskMediasTask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move {
-            Self::load(&db)
-                .await
-                .map_err(|err| anyhow::anyhow!("load download task error :{:?}", err))
-        };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
+        let handle = runtimer
+            .spawn_background_task(|_ctx| async move { Self::related_all_medias(&db).await });
+
         Self(ECSHandleResult::new(handle))
     }
 
     pub async fn related_medias(db: &Db) -> Result<Vec<DownloadRelatedTaskId>, DbErr> {
-        let taskids = Self::load_with(db, |select| {
+        let taskids = LoadDownloadtaskTask::load_with(db, |select| {
             select.filter(downloadtask::Column::TypeId.eq(MEDIA))
         })
         .await?;
@@ -173,25 +170,4 @@ AND dt.state IN ('Pending', 'Downloading')
 
         Ok(relateds)
     }
-}
-
-impl Loadable for LoadDownloadtaskTask {
-    type Entity = downloadtask::DownloadtaskEntity;
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct LoadDownloadtaskMediasTask(
-    pub ECSHandleResult<Vec<DownloadtaskMediasModel>, anyhow::Error>,
-);
-
-impl LoadDownloadtaskMediasTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move { Self::load(&db).await.map_err(Into::into) };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(ECSHandleResult::new(handle))
-    }
-}
-
-impl Loadable for LoadDownloadtaskMediasTask {
-    type Entity = DownloadtaskMediasEntity;
 }

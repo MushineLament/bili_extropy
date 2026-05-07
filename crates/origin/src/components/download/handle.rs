@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    fmt::{Debug, Display},
     fs::{self, File},
     hash::Hash,
     io::{self, ErrorKind, Seek as _, SeekFrom, Write as _},
@@ -63,45 +64,55 @@ const BAR_TEMPLATE: &str = "{msg} {spinner:.green} [{elapsed_precise}] [{wide_ba
 pub const TEMP_DOWNLOAD_FOLDER: &str = ".temp";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DownloadWay(pub String);
+pub struct MediaBvidOrAid(pub String);
 
-impl DownloadWay {
+impl MediaBvidOrAid {
     pub fn new<T: Into<String>>(str: T) -> Self {
         Self(str.into())
     }
+
+    pub fn parse(self) -> MediaUniqueId {
+        match self.0.parse::<i64>() {
+            Ok(aid) => MediaUniqueId::Aid(aid),
+            Err(_) => MediaUniqueId::BvId(self.0),
+        }
+    }
 }
 
-impl DownloadPendding for DownloadWay {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MediaUniqueId {
+    Aid(i64),
+    BvId(String),
+}
+
+impl MediaUniqueId {
+    pub fn from_bvid_or_aid(r#type: MediaBvidOrAid) -> Self {
+        r#type.parse()
+    }
+
+    pub fn as_str(&self) -> Cow<'_, str> {
+        match self {
+            MediaUniqueId::Aid(aid) => Cow::Owned(aid.to_string()),
+            MediaUniqueId::BvId(bvid) => Cow::Borrowed(&bvid),
+        }
+    }
+}
+
+impl DownloadPendding for MediaUniqueId {
     fn to_response(
         &self,
     ) -> impl Future<Output = Result<MediaInfoSingle, DownloadFileError>> + Send {
         let handle = async {
-            let anyhow = anyhow::anyhow!("request aid media<{:?}>", self.0);
-
-            let response: std::result::Result<MediaInfoSingle, DownloadFileError> =
-                BiliApi::request(MediaInfoBvidPayload {
-                    bvid: self.0.clone(),
-                })
-                .await
-                .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)));
-
-            if response.is_ok() {
-                return response;
-            }
-
-            let Ok(aid) = self.0.parse::<MediaAid>() else {
-                // if not a mediacid and not a avlid bvid
-                error!(
-                    "{:?}",
-                    anyhow::anyhow!("{:?} error:{:?}", anyhow, MaybeLocation::caller())
-                );
-                return response;
-            };
-
-            let response: Result<MediaInfoSingle, DownloadFileError> =
-                BiliApi::request(MediaInfoAidPayload { aid })
+            let response: std::result::Result<MediaInfoSingle, DownloadFileError> = match self {
+                MediaUniqueId::Aid(aid) => BiliApi::request(MediaInfoAidPayload { aid: *aid })
                     .await
-                    .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)));
+                    .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err))),
+                MediaUniqueId::BvId(bvid) => {
+                    BiliApi::request(MediaInfoBvidPayload { bvid: bvid.clone() })
+                        .await
+                        .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)))
+                }
+            };
 
             response
         };
@@ -137,9 +148,21 @@ impl DownloadPendding for DownloadWay {
             Ok(realted_taskids.into_iter().map(|model| model.id).collect())
         }
     }
+
+    fn into_unique_id(self) -> MediaUniqueId {
+        self
+    }
+
+    fn massage(&self) -> impl Display {
+        self.as_str()
+    }
 }
 
 pub trait DownloadPendding {
+    fn into_unique_id(self) -> MediaUniqueId;
+
+    fn massage(&self) -> impl Display;
+
     fn to_response(
         &self,
     ) -> impl Future<Output = Result<MediaInfoSingle, DownloadFileError>> + Send;

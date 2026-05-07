@@ -30,21 +30,30 @@ use crate::{
 pub const HELP_STATUS: &str = r#"
 Back up your favorite bilibili online resources with RESP.
 
-Usage: status <COMMAND> [OPTIONS] 
+Usage: status [COMMAND] [OPTIONS]
 
 Commands:
-    insert                                              Insert a download media path.
-        <FOLDER_NAME> <PATH> [--state Active/InActive]      Dowload media into PATH's FOLDER_NAME folder.
+    insert <FOLDER_NAME> [PATH] [OPTIONS]   Insert a download media path.
+    help                                    Print this help message.
 
-Options:
-    -v,         --verbose                               Show debug messages
-    -h,         --help                                  Print help
-    -V,         --version                               Print version
-    -id [ID],   --id [ID]                               Point ID
+If no command is given, all status entries will be listed.
 
-Example:
-    status insert folder_name
-    status insert folder_name .temp --state Active
+Options (for insert):
+    --state <Active|Inactive>       Set the status state. If omitted, state is not set.
+    --id <ID>                       Specify a status entry ID to update an existing record.
+    --downloadrule <RULE_ID>        Associate one or more download rules by their IDs
+                                    (e.g. --downloadrule 1).
+
+Common Options:
+    -v, --verbose                   Show debug messages
+    -h, --help                      Print help (alias: status help)
+    -V, --version                   Print version
+
+Examples:
+    status insert my_folder
+    status insert my_folder ./downloads --state Active
+    status insert my_folder ./downloads --state Active --id 42 --downloadrule 1
+    status --help
 "#;
 
 const STATUS_COMMAND_INDEX: usize = 2;

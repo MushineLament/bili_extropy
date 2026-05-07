@@ -11,13 +11,13 @@ use tracing::{error, info};
 
 use crate::{
     components::{
-        auth::handle::ActiveAccounts,
+        account::handle::ActiveAccounts,
         download::DownloadHandle,
         list::handle::{
             ListAccountCollectionsTask, ListAccountFollwedTask, ListAccountTask,
             ListCollectionMediasTask, ListCollectionTask, ListDownloadruleTask,
-            ListDownloadtaskTask, ListMediasTask, ListStatusRelatedDownloadruleTask,
-            ListStatusTask, ListUppersTask,
+            ListDownloadtaskMediasTask, ListDownloadtaskTask, ListMediasTask,
+            ListStatusRelatedDownloadruleTask, ListStatusTask, ListUpperMediasTask, ListUppersTask,
         },
     },
     console::ConsoleTrims,
@@ -81,6 +81,8 @@ impl Plugin for CommandListPlugin {
                 list_status_related_downloadrule_task,
                 list_status_task,
                 list_downloadtask_task,
+                list_downloadtask_medias_task,
+                list_upper_medias_task,
             ),
         );
     }
@@ -131,7 +133,22 @@ pub fn spawn_list_task(
                 }
             },
             Some("upper") => {
-                commands.spawn(ListUppersTask::new(db.clone(), runtimer.as_mut()));
+                // todo
+                match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
+                    Some("medias") => {
+                        commands.spawn(ListUpperMediasTask::new(db.clone(), runtimer.as_mut()));
+                    }
+                    Some("collection") => {
+                        // commands.spawn(ListUpperCollectionTask::new(db.clone(), runtimer.as_mut()));
+                        error!("this subcommand has not finished");
+                    }
+                    Some(unkown) => {
+                        error!("not has this command: {:?}", unkown);
+                    }
+                    None => {
+                        commands.spawn(ListUppersTask::new(db.clone(), runtimer.as_mut()));
+                    }
+                }
             }
             Some("collection") => {
                 commands.spawn(ListCollectionTask::new(db.clone(), runtimer.as_mut()));
@@ -177,7 +194,13 @@ pub fn spawn_list_task(
                 }
             },
 
-            Some("downloadtask") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
+            Some("task") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("medias") => {
+                    commands.spawn(ListDownloadtaskMediasTask::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                    ));
+                }
                 Some(unkown) => {
                     error!("not has this command: {:?}", unkown);
                 }
@@ -368,6 +391,36 @@ pub fn list_downloadtask_task(
         let table = result
             .iter()
             .table_head(["id", "type", "related id", "state"]);
+        info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_downloadtask_medias_task(
+    mut commands: Commands,
+    query: Query<(&mut ListDownloadtaskMediasTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        let table = result.iter().table_head(["task id", "media id", "state"]);
+        info!("\n{}\nrows: {}", table, table.count_rows() - 1);
+    }
+}
+
+pub fn list_upper_medias_task(
+    mut commands: Commands,
+    query: Query<(&mut ListUpperMediasTask, Entity)>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+
+        let table = result.iter().table_head(["media id", "upper id"]);
         info!("\n{}\nrows: {}", table, table.count_rows() - 1);
     }
 }
