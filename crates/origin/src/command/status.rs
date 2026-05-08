@@ -16,7 +16,7 @@ use crate::{
     command::HELP,
     components::{
         initialize::DbInitailizeComponent as _,
-        list::handle::ListStatusTask,
+        list::handle::ListTask,
         status::handle::{
             ActiveStatus, InsertStatusRelatedDownloadruleTask, LoadStatusRelatedDownloadruleTask,
             LoadStatusTask, StatusInsertTask, StatusRelatedDownloadrule, StatusState,
@@ -165,7 +165,7 @@ pub fn spawn_status_task(
                 error!("not has this command: {:?}", unkown);
             }
             None => {
-                commands.spawn(ListStatusTask::new(db.clone(), runtimer.as_mut()));
+                commands.spawn((LoadStatusTask::new(db.clone(), runtimer.as_mut()), ListTask));
             }
         }
     }

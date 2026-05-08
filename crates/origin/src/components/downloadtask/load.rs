@@ -4,28 +4,28 @@ use bevy::{
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr, QueryFilter, Statement};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr, QueryFilter, Select, Statement,
+};
 
 use crate::{
     components::{
-        downloadtask::handle::DownloadtaskRelatedMediaId, fetch::handle::Loadable,
+        downloadtask::handle::DownloadtaskRelatedMediaPending, fetch::handle::Loadable,
         handle::ECSHandleResult,
     },
     db::Db,
     entity::{
         MediaAid,
-        downloadtask::{self},
+        downloadtask::{self, DownloadtaskModel},
         downloadtask_medias::{DownloadtaskMediasEntity, DownloadtaskMediasModel},
         media::MEDIA,
     },
 };
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct LoadDownloadtaskTask(
-    pub ECSHandleResult<Vec<downloadtask::DownloadtaskModel>, anyhow::Error>,
-);
+pub struct LoadDownloadtask(pub ECSHandleResult<Vec<DownloadtaskModel>, anyhow::Error>);
 
-impl LoadDownloadtaskTask {
+impl LoadDownloadtask {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move {
             Self::load(&db)
@@ -36,7 +36,24 @@ impl LoadDownloadtaskTask {
         Self(ECSHandleResult::new(handle))
     }
 
-    pub async fn related_medias(db: &Db) -> Result<Vec<DownloadtaskRelatedMediaId>, DbErr> {
+    pub fn new_with<F>(db: Db, runtimer: &mut TokioTasksRuntime, func: F) -> Self
+    where
+        F: FnOnce(
+                Select<<LoadDownloadtask as Loadable>::Entity>,
+            ) -> Select<<LoadDownloadtask as Loadable>::Entity>
+            + Send
+            + 'static,
+    {
+        let task = async move {
+            Self::load_with(&db, func)
+                .await
+                .map_err(|err| anyhow::anyhow!("load download task error :{:?}", err))
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+
+    pub async fn related_medias(db: &Db) -> Result<Vec<DownloadtaskRelatedMediaPending>, DbErr> {
         let taskids = Self::load_with(db, |select| {
             select.filter(downloadtask::Column::TypeId.eq(MEDIA))
         })
@@ -44,8 +61,8 @@ impl LoadDownloadtaskTask {
 
         let relateds = taskids
             .iter()
-            .map(|model| DownloadtaskRelatedMediaId {
-                id: model.generic_id,
+            .map(|model| DownloadtaskRelatedMediaPending {
+                media_id: model.generic_id,
                 taskid: vec![model.id],
             })
             .collect();
@@ -55,7 +72,7 @@ impl LoadDownloadtaskTask {
 
     pub async fn related_upper_medias(
         db: &Db,
-    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaId>, DbErr> {
+    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaPending>, DbErr> {
         let querys = db
             .db
             .query_all(Statement::from_string(
@@ -70,7 +87,7 @@ AND dt.state IN ('Pending', 'Downloading')
             ))
             .await?;
 
-        let mut hash: HashMap<i64, DownloadtaskRelatedMediaId> = HashMap::new();
+        let mut hash: HashMap<i64, DownloadtaskRelatedMediaPending> = HashMap::new();
 
         for (task_id, media_id) in querys.into_iter().filter_map(|query| {
             let task_id: i64 = query.try_get("", "task_id").ok()?;
@@ -83,8 +100,8 @@ AND dt.state IN ('Pending', 'Downloading')
                     occupied.into_mut().taskid.push(task_id);
                 }
                 Entry::Vacant(vacant) => {
-                    vacant.insert(DownloadtaskRelatedMediaId {
-                        id: media_id,
+                    vacant.insert(DownloadtaskRelatedMediaPending {
+                        media_id,
                         taskid: vec![task_id],
                     });
                 }
@@ -96,7 +113,7 @@ AND dt.state IN ('Pending', 'Downloading')
 
     pub async fn related_collection_medias(
         db: &Db,
-    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaId>, DbErr> {
+    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaPending>, DbErr> {
         let querys = db
             .db
             .query_all(Statement::from_string(
@@ -111,7 +128,7 @@ AND dt.state IN ('Pending', 'Downloading')
             ))
             .await?;
 
-        let mut hash: HashMap<i64, DownloadtaskRelatedMediaId> = HashMap::new();
+        let mut hash: HashMap<i64, DownloadtaskRelatedMediaPending> = HashMap::new();
 
         for (task_id, media_id) in querys.into_iter().filter_map(|query| {
             let task_id: i64 = query.try_get("", "task_id").ok()?;
@@ -124,8 +141,8 @@ AND dt.state IN ('Pending', 'Downloading')
                     occupied.into_mut().taskid.push(task_id);
                 }
                 Entry::Vacant(vacant) => {
-                    vacant.insert(DownloadtaskRelatedMediaId {
-                        id: media_id,
+                    vacant.insert(DownloadtaskRelatedMediaPending {
+                        media_id,
                         taskid: vec![task_id],
                     });
                 }
@@ -137,7 +154,7 @@ AND dt.state IN ('Pending', 'Downloading')
 
     pub async fn related_all_medias(
         db: &Db,
-    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaId>, DbErr> {
+    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaPending>, DbErr> {
         let (medias, upper_medias, collection_medias) = tokio::join!(
             Self::related_medias(db),
             Self::related_upper_medias(db),
@@ -150,7 +167,7 @@ AND dt.state IN ('Pending', 'Downloading')
         let mut relateds = upper_medias;
 
         for media in medias {
-            match relateds.entry(media.id) {
+            match relateds.entry(media.media_id) {
                 Entry::Occupied(occupied) => {
                     occupied.into_mut().taskid.extend(media.taskid);
                 }
@@ -161,7 +178,7 @@ AND dt.state IN ('Pending', 'Downloading')
         }
 
         for (_, media) in collection_medias {
-            match relateds.entry(media.id) {
+            match relateds.entry(media.media_id) {
                 Entry::Occupied(occupied) => {
                     occupied.into_mut().taskid.extend(media.taskid);
                 }
@@ -175,16 +192,14 @@ AND dt.state IN ('Pending', 'Downloading')
     }
 }
 
-impl Loadable for LoadDownloadtaskTask {
+impl Loadable for LoadDownloadtask {
     type Entity = downloadtask::DownloadtaskEntity;
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct LoadDownloadtaskMediasTask(
-    pub ECSHandleResult<Vec<DownloadtaskMediasModel>, anyhow::Error>,
-);
+pub struct LoadDownloadtaskMedias(pub ECSHandleResult<Vec<DownloadtaskMediasModel>, anyhow::Error>);
 
-impl LoadDownloadtaskMediasTask {
+impl LoadDownloadtaskMedias {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = async move { Self::load(&db).await.map_err(Into::into) };
         let handle = runtimer.spawn_background_task(|_ctx| task);
@@ -192,16 +207,16 @@ impl LoadDownloadtaskMediasTask {
     }
 }
 
-impl Loadable for LoadDownloadtaskMediasTask {
+impl Loadable for LoadDownloadtaskMedias {
     type Entity = DownloadtaskMediasEntity;
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct LoadDownloadtaskRelatedMediasTask(
-    pub ECSHandleResult<HashMap<MediaAid, DownloadtaskRelatedMediaId>, DbErr>,
+pub struct LoadDownloadtaskRelatedMedias(
+    pub ECSHandleResult<HashMap<MediaAid, DownloadtaskRelatedMediaPending>, DbErr>,
 );
 
-impl LoadDownloadtaskRelatedMediasTask {
+impl LoadDownloadtaskRelatedMedias {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
         let handle = runtimer
             .spawn_background_task(|_ctx| async move { Self::load_related_all_medias(&db).await });
@@ -209,16 +224,18 @@ impl LoadDownloadtaskRelatedMediasTask {
         Self(ECSHandleResult::new(handle))
     }
 
-    pub async fn load_related_medias(db: &Db) -> Result<Vec<DownloadtaskRelatedMediaId>, DbErr> {
-        let taskids = LoadDownloadtaskTask::load_with(db, |select| {
+    pub async fn load_related_medias(
+        db: &Db,
+    ) -> Result<Vec<DownloadtaskRelatedMediaPending>, DbErr> {
+        let taskids = LoadDownloadtask::load_with(db, |select| {
             select.filter(downloadtask::Column::TypeId.eq(MEDIA))
         })
         .await?;
 
         let relateds = taskids
             .iter()
-            .map(|model| DownloadtaskRelatedMediaId {
-                id: model.generic_id,
+            .map(|model| DownloadtaskRelatedMediaPending {
+                media_id: model.generic_id,
                 taskid: vec![model.id],
             })
             .collect();
@@ -228,7 +245,7 @@ impl LoadDownloadtaskRelatedMediasTask {
 
     pub async fn load_related_upper_medias(
         db: &Db,
-    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaId>, DbErr> {
+    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaPending>, DbErr> {
         let querys = db
             .db
             .query_all(Statement::from_string(
@@ -242,7 +259,7 @@ WHERE dt.type_id = 'Upper'
             ))
             .await?;
 
-        let mut hash: HashMap<i64, DownloadtaskRelatedMediaId> = HashMap::new();
+        let mut hash: HashMap<i64, DownloadtaskRelatedMediaPending> = HashMap::new();
 
         for (related_id, media_id) in
             querys
@@ -259,8 +276,8 @@ WHERE dt.type_id = 'Upper'
                     occupied.into_mut().taskid.push(related_id);
                 }
                 Entry::Vacant(vacant) => {
-                    vacant.insert(DownloadtaskRelatedMediaId {
-                        id: media_id,
+                    vacant.insert(DownloadtaskRelatedMediaPending {
+                        media_id,
                         taskid: vec![related_id],
                     });
                 }
@@ -272,7 +289,7 @@ WHERE dt.type_id = 'Upper'
 
     pub async fn load_related_collection_medias(
         db: &Db,
-    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaId>, DbErr> {
+    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaPending>, DbErr> {
         let querys = db
             .db
             .query_all(Statement::from_string(
@@ -286,7 +303,7 @@ WHERE dt.type_id = 'Collection'
             ))
             .await?;
 
-        let mut hash: HashMap<i64, DownloadtaskRelatedMediaId> = HashMap::new();
+        let mut hash: HashMap<i64, DownloadtaskRelatedMediaPending> = HashMap::new();
 
         for (related_id, media_id) in querys.into_iter().filter_map(|query| {
             let task_id: i64 = query.try_get("", "related_id").ok()?;
@@ -299,8 +316,8 @@ WHERE dt.type_id = 'Collection'
                     occupied.into_mut().taskid.push(related_id);
                 }
                 Entry::Vacant(vacant) => {
-                    vacant.insert(DownloadtaskRelatedMediaId {
-                        id: media_id,
+                    vacant.insert(DownloadtaskRelatedMediaPending {
+                        media_id,
                         taskid: vec![related_id],
                     });
                 }
@@ -312,7 +329,7 @@ WHERE dt.type_id = 'Collection'
 
     pub async fn load_related_all_medias(
         db: &Db,
-    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaId>, DbErr> {
+    ) -> Result<HashMap<MediaAid, DownloadtaskRelatedMediaPending>, DbErr> {
         let (medias, upper_medias, collection_medias) = tokio::join!(
             Self::load_related_medias(db),
             Self::load_related_upper_medias(db),
@@ -325,7 +342,7 @@ WHERE dt.type_id = 'Collection'
         let mut relateds = upper_medias;
 
         for media in medias {
-            match relateds.entry(media.id) {
+            match relateds.entry(media.media_id) {
                 Entry::Occupied(occupied) => {
                     occupied.into_mut().taskid.extend(media.taskid);
                 }
@@ -336,7 +353,7 @@ WHERE dt.type_id = 'Collection'
         }
 
         for (_, media) in collection_medias {
-            match relateds.entry(media.id) {
+            match relateds.entry(media.media_id) {
                 Entry::Occupied(occupied) => {
                     occupied.into_mut().taskid.extend(media.taskid);
                 }

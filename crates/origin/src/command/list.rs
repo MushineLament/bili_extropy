@@ -3,6 +3,7 @@ use bevy::{
     ecs::{
         entity::Entity,
         message::MessageReader,
+        query::With,
         system::{Commands, Query, Res, ResMut},
     },
 };
@@ -11,15 +12,23 @@ use tracing::{error, info};
 
 use crate::{
     components::{
-        account::handle::ActiveAccounts,
+        account::{handle::ActiveAccounts, load::LoadAccountCollectionsTask},
         download::DownloadHandle,
-        list::handle::{
-            ListAccountCollectionsTask, ListAccountFollwedTask, ListAccountTask,
-            ListCollectionMediasTask, ListCollectionTask, ListDownloadruleTask,
-            ListDownloadtaskMediasPendingDownloadTask, ListDownloadtaskMediasTask,
-            ListDownloadtaskRelatedMediasTask, ListDownloadtaskTask, ListMediasTask,
-            ListStatusRelatedDownloadruleTask, ListStatusTask, ListUpperMediasTask, ListUppersTask,
+        downloadrule::load::LoadDownloadrule,
+        downloadtask::load::{
+            LoadDownloadtask, LoadDownloadtaskMedias, LoadDownloadtaskMediasPendingDownloadTask,
+            LoadDownloadtaskRelatedMedias,
         },
+        fetch::handle::LoadUpperMediasTask,
+        list::{
+            handle::{
+                ListAccountFollwedTask, ListAccountTask, ListCollectionMediasTask,
+                ListCollectionTask, ListTask,
+            },
+            load::LoadMediasTask,
+        },
+        status::handle::{LoadStatusRelatedDownloadruleTask, LoadStatusTask},
+        upper::load::LoadUppersTask,
     },
     console::ConsoleTrims,
     db::Db,
@@ -123,9 +132,9 @@ pub fn spawn_list_task(
                     commands.spawn(ListAccountFollwedTask::new(db.clone(), runtimer.as_mut()));
                 }
                 Some("collections") => {
-                    commands.spawn(ListAccountCollectionsTask::new(
-                        db.clone(),
-                        runtimer.as_mut(),
+                    commands.spawn((
+                        LoadAccountCollectionsTask::new(db.clone(), runtimer.as_mut()),
+                        ListTask,
                     ));
                 }
                 Some(unkown) => {
@@ -139,7 +148,10 @@ pub fn spawn_list_task(
                 // todo
                 match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
                     Some("medias") => {
-                        commands.spawn(ListUpperMediasTask::new(db.clone(), runtimer.as_mut()));
+                        commands.spawn((
+                            LoadUpperMediasTask::new(db.clone(), runtimer.as_mut()),
+                            ListTask,
+                        ));
                     }
                     Some("collection") => {
                         // commands.spawn(ListUpperCollectionTask::new(db.clone(), runtimer.as_mut()));
@@ -149,7 +161,8 @@ pub fn spawn_list_task(
                         error!("not has this command: {:?}", unkown);
                     }
                     None => {
-                        commands.spawn(ListUppersTask::new(db.clone(), runtimer.as_mut()));
+                        commands
+                            .spawn((LoadUppersTask::new(db.clone(), runtimer.as_mut()), ListTask));
                     }
                 }
             }
@@ -164,63 +177,72 @@ pub fn spawn_list_task(
                     error!("not has this command: {:?}", unkown);
                 }
                 None => {
-                    commands.spawn(ListMediasTask::new(db.clone(), runtimer.as_mut()));
+                    commands.spawn((LoadMediasTask::new(db.clone(), runtimer.as_mut()), ListTask));
                 }
             },
 
             Some("status") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
                 Some("downloadrule") => {
-                    commands.spawn(ListStatusRelatedDownloadruleTask::new(
-                        db.clone(),
-                        runtimer.as_mut(),
+                    commands.spawn((
+                        LoadStatusRelatedDownloadruleTask::new(db.clone(), runtimer.as_mut()),
+                        ListTask,
                     ));
                 }
                 Some(unkown) => {
                     error!("not has this command: {:?}", unkown);
                 }
                 None => {
-                    commands.spawn(ListStatusTask::new(db.clone(), runtimer.as_mut()));
+                    commands.spawn((LoadStatusTask::new(db.clone(), runtimer.as_mut()), ListTask));
                 }
             },
             Some("downloadrule") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
                 Some("status") => {
-                    commands.spawn(ListStatusRelatedDownloadruleTask::new(
-                        db.clone(),
-                        runtimer.as_mut(),
+                    commands.spawn((
+                        LoadStatusRelatedDownloadruleTask::new(db.clone(), runtimer.as_mut()),
+                        ListTask,
                     ));
                 }
                 Some(unkown) => {
                     error!("not has this command: {:?}", unkown);
                 }
                 None => {
-                    commands.spawn(ListDownloadruleTask::new(db.clone(), runtimer.as_mut()));
+                    commands.spawn((
+                        LoadDownloadrule::new(db.clone(), runtimer.as_mut()),
+                        ListTask,
+                    ));
                 }
             },
 
             Some("task") => match args.get(LIST_SUBCOMMAND_INDEX).map(String::as_str) {
                 Some("pendings") => {
-                    commands.spawn(ListDownloadtaskMediasPendingDownloadTask::new(
-                        db.clone(),
-                        runtimer.as_mut(),
+                    commands.spawn((
+                        LoadDownloadtaskMediasPendingDownloadTask::new(
+                            db.clone(),
+                            runtimer.as_mut(),
+                        ),
+                        ListTask,
                     ));
                 }
                 Some("related") => {
-                    commands.spawn(ListDownloadtaskRelatedMediasTask::new(
-                        db.clone(),
-                        runtimer.as_mut(),
+                    commands.spawn((
+                        LoadDownloadtaskRelatedMedias::new(db.clone(), runtimer.as_mut()),
+                        ListTask,
                     ));
                 }
                 Some("medias") => {
-                    commands.spawn(ListDownloadtaskMediasTask::new(
-                        db.clone(),
-                        runtimer.as_mut(),
+                    commands.spawn((
+                        LoadDownloadtaskMedias::new(db.clone(), runtimer.as_mut()),
+                        ListTask,
                     ));
                 }
                 Some(unkown) => {
                     error!("not has this command: {:?}", unkown);
                 }
                 None => {
-                    commands.spawn(ListDownloadtaskTask::new(db.clone(), runtimer.as_mut()));
+                    commands.spawn((
+                        LoadDownloadtask::new(db.clone(), runtimer.as_mut()),
+                        ListTask,
+                    ));
                 }
             },
 
@@ -254,7 +276,7 @@ pub fn list_account_task(mut commands: Commands, query: Query<(&mut ListAccountT
 
 pub fn list_account_collections_task(
     mut commands: Commands,
-    query: Query<(&mut ListAccountCollectionsTask, Entity)>,
+    query: Query<(&mut LoadAccountCollectionsTask, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
@@ -299,7 +321,10 @@ pub fn list_account_follwed_task(
     }
 }
 
-pub fn list_uppers_task(mut commands: Commands, query: Query<(&mut ListUppersTask, Entity)>) {
+pub fn list_uppers_task(
+    mut commands: Commands,
+    query: Query<(&mut LoadUppersTask, Entity), With<ListTask>>,
+) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
             continue;
@@ -326,7 +351,10 @@ pub fn list_collection_medias_task(
     }
 }
 
-pub fn list_medias(mut commands: Commands, query: Query<(&mut ListMediasTask, Entity)>) {
+pub fn list_medias(
+    mut commands: Commands,
+    query: Query<(&mut LoadMediasTask, Entity), With<ListTask>>,
+) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
             continue;
@@ -342,7 +370,7 @@ pub fn list_medias(mut commands: Commands, query: Query<(&mut ListMediasTask, En
 
 pub fn list_download_rule_task(
     mut commands: Commands,
-    query: Query<(&mut ListDownloadruleTask, Entity)>,
+    query: Query<(&mut LoadDownloadrule, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
@@ -366,7 +394,7 @@ pub fn list_download_rule_task(
 
 pub fn list_status_related_downloadrule_task(
     mut commands: Commands,
-    query: Query<(&mut ListStatusRelatedDownloadruleTask, Entity)>,
+    query: Query<(&mut LoadStatusRelatedDownloadruleTask, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
@@ -379,7 +407,10 @@ pub fn list_status_related_downloadrule_task(
     }
 }
 
-pub fn list_status_task(mut commands: Commands, query: Query<(&mut ListStatusTask, Entity)>) {
+pub fn list_status_task(
+    mut commands: Commands,
+    query: Query<(&mut LoadStatusTask, Entity), With<ListTask>>,
+) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
             continue;
@@ -395,7 +426,7 @@ pub fn list_status_task(mut commands: Commands, query: Query<(&mut ListStatusTas
 
 pub fn list_downloadtask_task(
     mut commands: Commands,
-    query: Query<(&mut ListDownloadtaskTask, Entity)>,
+    query: Query<(&mut LoadDownloadtask, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
@@ -412,7 +443,7 @@ pub fn list_downloadtask_task(
 
 pub fn list_downloadtask_medias_task(
     mut commands: Commands,
-    query: Query<(&mut ListDownloadtaskMediasTask, Entity)>,
+    query: Query<(&mut LoadDownloadtaskMedias, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
@@ -427,7 +458,7 @@ pub fn list_downloadtask_medias_task(
 
 pub fn list_upper_medias_task(
     mut commands: Commands,
-    query: Query<(&mut ListUpperMediasTask, Entity)>,
+    query: Query<(&mut LoadUpperMediasTask, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
@@ -442,7 +473,7 @@ pub fn list_upper_medias_task(
 
 pub fn list_downloadtask_related_medias_task(
     mut commands: Commands,
-    query: Query<(&mut ListDownloadtaskRelatedMediasTask, Entity)>,
+    query: Query<(&mut LoadDownloadtaskRelatedMedias, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {
@@ -458,7 +489,7 @@ pub fn list_downloadtask_related_medias_task(
 
 pub fn list_downloadtask_medias_pending_download_task(
     mut commands: Commands,
-    query: Query<(&mut ListDownloadtaskMediasPendingDownloadTask, Entity)>,
+    query: Query<(&mut LoadDownloadtaskMediasPendingDownloadTask, Entity), With<ListTask>>,
 ) {
     for (mut task, entity) in query {
         let Ok(result) = task.try_result() else {

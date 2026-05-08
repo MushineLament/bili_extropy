@@ -7,22 +7,14 @@ use sea_orm::EntityTrait as _;
 
 use crate::{
     components::{
-        account::load::LoadAccountCollectionsTask,
-        downloadtask::load::{
-            LoadDownloadtaskMediasPendingDownloadTask, LoadDownloadtaskMediasTask,
-            LoadDownloadtaskRelatedMediasTask, LoadDownloadtaskTask,
-        },
-        fetch::handle::LoadUpperMediasTask,
         handle::ECSHandleResult,
         list::load::LoadMediasTask,
-        status::handle::{LoadStatusRelatedDownloadruleTask, LoadStatusTask},
-        upper::load::LoadUppersTask,
     },
     db::Db,
     entity::{
         account::{self, AccountModel},
         collection::{self, CollectionModel},
-        collection_media, downloadrule, upper_account,
+        collection_media, upper_account,
     },
 };
 
@@ -95,76 +87,6 @@ impl ListCollectionMediasTask {
     }
 }
 
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListDownloadruleTask(
-    pub ECSHandleResult<Vec<downloadrule::DownloadruleModel>, anyhow::Error>,
-);
-
-impl ListDownloadruleTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move {
-            let medias = downloadrule::DownloadruleEntity::find().all(&db.db).await?;
-            Ok(medias)
-        };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(ECSHandleResult::new(handle))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListDownloadtaskTask(pub LoadDownloadtaskTask);
-
-impl ListDownloadtaskTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadDownloadtaskTask::new(db, runtimer))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListStatusRelatedDownloadruleTask(pub LoadStatusRelatedDownloadruleTask);
-
-impl ListStatusRelatedDownloadruleTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadStatusRelatedDownloadruleTask::new(db, runtimer))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListStatusTask(pub LoadStatusTask);
-
-impl ListStatusTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadStatusTask::new(db, runtimer))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListDownloadtaskMediasTask(pub LoadDownloadtaskMediasTask);
-
-impl ListDownloadtaskMediasTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadDownloadtaskMediasTask::new(db, runtimer))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListUpperMediasTask(pub LoadUpperMediasTask);
-
-impl ListUpperMediasTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadUpperMediasTask::new(db, runtimer))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListAccountCollectionsTask(pub LoadAccountCollectionsTask);
-
-impl ListAccountCollectionsTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadAccountCollectionsTask::new(db, runtimer))
-    }
-}
-
 // #[derive(Debug, Component, Deref, DerefMut)]
 // pub struct ListUpperCollectionsTask(pub LoadUpperCollectionsTask);
 
@@ -174,29 +96,6 @@ impl ListAccountCollectionsTask {
 //     }
 // }
 
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListUppersTask(pub LoadUppersTask);
-
-impl ListUppersTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadUppersTask::new(db, runtimer))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListDownloadtaskRelatedMediasTask(pub LoadDownloadtaskRelatedMediasTask);
-
-impl ListDownloadtaskRelatedMediasTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadDownloadtaskRelatedMediasTask::new(db, runtimer))
-    }
-}
-
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct ListDownloadtaskMediasPendingDownloadTask(pub LoadDownloadtaskMediasPendingDownloadTask);
-
-impl ListDownloadtaskMediasPendingDownloadTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        Self(LoadDownloadtaskMediasPendingDownloadTask::new(db, runtimer))
-    }
-}
+/// if has this mark,will println data about load.
+#[derive(Debug, Component, Default, Clone, PartialEq, Eq, Hash)]
+pub struct ListTask;

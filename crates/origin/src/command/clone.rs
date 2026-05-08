@@ -20,7 +20,7 @@ use crate::{
             DownloadFileError, DownloadFileErrorKind, DownloadHandle, DownloadPendding,
             MediaBvidOrAid,
         },
-        downloadtask::handle::DownloadtaskRelatedMediaId,
+        downloadtask::handle::DownloadtaskRelatedMediaPending,
         status::handle::{ActiveStatus, StatusRelatedDownloadrule},
     },
     console::ConsoleTrims,
@@ -108,8 +108,8 @@ pub fn upsert_download_list(
                                         );
                                     }
 
-                                    world.world.spawn(DownloadtaskRelatedMediaId {
-                                        id: media.aid,
+                                    world.world.spawn(DownloadtaskRelatedMediaPending {
+                                        media_id: media.aid,
                                         taskid: vec![],
                                     });
                                 })
@@ -142,35 +142,36 @@ pub fn spawn_download_task(
     mut commands: Commands,
     db: Res<Db>,
     mut runtimer: ResMut<TokioTasksRuntime>,
-    mut accounts: ResMut<ActiveAccounts>,
+    mut active_account: ResMut<ActiveAccounts>,
     query_handle: Query<&DownloadHandle>,
     active_status: ResMut<ActiveStatus>,
     active_downloadrule: ResMut<ActiveDownloadrule>,
     status_related_downloadrule: ResMut<StatusRelatedDownloadrule>,
-    lists: Query<(&mut DownloadtaskRelatedMediaId, Entity)>,
+
+    mut pending_lists: Query<(&mut DownloadtaskRelatedMediaPending, Entity)>,
 ) {
-    if lists.is_empty() {
+    if pending_lists.count() <= 0 {
         return;
     }
 
-    let take_count = 4 - query_handle.count() as i8;
+    let count = query_handle.count();
 
-    if take_count <= 0 {
-        return;
-    }
-
-    let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
-
-    let Some(account) = accounts
-        .try_result()
-        .ok()
-        .and_then(|accounts| accounts.first())
-    else {
-        error!("No active account found. Please make sure login first.");
+    let Some(sub) = 4usize.checked_sub(count).filter(|sub| *sub != 0) else {
         return;
     };
 
-    for (mut list, entity) in lists {
+    let Some(cookies) = active_account.get_first_cookies_mut() else {
+        error!("not any active account, fetch media failed");
+        return;
+    };
+
+    let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
+
+    let mut iter = pending_lists.iter_mut();
+
+    let pendings = (0..sub).map(|_| iter.next()).filter_map(|pending| pending);
+
+    for (mut list, entity) in pendings {
         info!("spawn a download handle");
 
         let list = mem::take(list.as_mut());
@@ -178,7 +179,7 @@ pub fn spawn_download_task(
         commands.spawn(DownloadHandle::new(
             db.clone(),
             bars.clone(),
-            &account.cookies,
+            cookies,
             list,
             runtimer.as_mut(),
             active_status.0.clone(),

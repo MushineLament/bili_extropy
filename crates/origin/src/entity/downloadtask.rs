@@ -3,9 +3,9 @@ use std::borrow::Cow;
 use sea_orm::entity::prelude::*;
 
 // ========== 向后兼容别名 ==========
-pub use ActiveModel as DownloadtaskActiveModel;
-pub use Entity as DownloadtaskEntity;
-pub use Model as DownloadtaskModel;
+pub type DownloadtaskActiveModel = ActiveModel;
+pub type DownloadtaskEntity = Entity;
+pub type DownloadtaskModel = Model;
 
 use crate::table::ToTableRecord;
 

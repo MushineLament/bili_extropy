@@ -43,7 +43,7 @@ use crate::{
 
 /// get upper's all media ids.return is current online upper's media ids.
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchUpperMediasTask {
+pub struct FetchUpperMedias {
     /// Is alse fetch media into sql database;
     pub upper_cid: UpperCid,
     pub fetch_medias: bool,
@@ -51,7 +51,7 @@ pub struct FetchUpperMediasTask {
     pub handle: ECSHandleResult<(Vec<MediaAid>, u64), anyhow::Error>,
 }
 
-impl FetchUpperMediasTask {
+impl FetchUpperMedias {
     #[track_caller]
     pub fn new(db: Db, id: UpperCid, runtimer: &mut TokioTasksRuntime, cookies: String) -> Self {
         let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, id, cookies));
@@ -149,9 +149,9 @@ impl FetchUpperMediasTask {
 /// don't create too more, or will get bilibili request ban some hours time.
 /// only support request one for avoid request ban.
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchMediaTask(pub ECSHandleResult<(MediaAid, u64), anyhow::Error>);
+pub struct FetchMedia(pub ECSHandleResult<(MediaAid, u64), anyhow::Error>);
 
-impl FetchMediaTask {
+impl FetchMedia {
     #[track_caller]
     pub fn new(
         db: Db,
@@ -219,9 +219,9 @@ impl FetchMediaTask {
 
 /// 获取收藏夹id下的所有mediacid
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchCollectMediasTask(pub ECSHandleResult<(CollectionId, u64), anyhow::Error>);
+pub struct FetchCollectMedias(pub ECSHandleResult<(CollectionId, u64), anyhow::Error>);
 
-impl FetchCollectMediasTask {
+impl FetchCollectMedias {
     #[track_caller]
     pub fn new(
         db: Db,
@@ -303,9 +303,9 @@ impl FetchCollectMediasTask {
 
 /// 获取登录账户与关注uppercid的关系
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchAccountFollowingTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchAccountFollowing(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-impl FetchAccountFollowingTask {
+impl FetchAccountFollowing {
     #[track_caller]
     pub fn new(db: Db, model: AccountModel, runtimer: &mut TokioTasksRuntime) -> Self {
         let task = runtimer.spawn_background_task(|_ctx| Self::task(db, model));
@@ -393,9 +393,9 @@ impl FetchAccountFollowingTask {
 
 /// 获取uppercid用户关注的up列表
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchUpperFollowingTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchUpperFollowing(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-impl FetchUpperFollowingTask {
+impl FetchUpperFollowing {
     #[track_caller]
     pub fn new(db: Db, cid: UpperCid, runtimer: &mut TokioTasksRuntime, cookies: String) -> Self {
         let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, cid, cookies));
@@ -476,9 +476,9 @@ impl FetchUpperFollowingTask {
 
 /// 更新数据库中的登录账户与收藏夹id的对应关系
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchAccountCollectionIdTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchAccountCollectionId(pub ECSHandleResult<(CollectionId, u64), anyhow::Error>);
 
-impl FetchAccountCollectionIdTask {
+impl FetchAccountCollectionId {
     #[track_caller]
     pub fn new(db: Db, model: AccountModel, runtimer: &mut TokioTasksRuntime) -> Self {
         let task: tokio::task::JoinHandle<Result<(i64, u64), anyhow::Error>> =
@@ -491,7 +491,7 @@ impl FetchAccountCollectionIdTask {
         db: Db,
         model: AccountModel,
         caller: MaybeLocation,
-    ) -> Result<(UpperCid, u64), anyhow::Error> {
+    ) -> Result<(CollectionId, u64), anyhow::Error> {
         crate::cookies::add_cookie_jar(crate::cookies::parse_cookies(&model.cookies));
 
         let account_id = model.account_id;
@@ -539,9 +539,9 @@ impl FetchAccountCollectionIdTask {
 
 /// 更新数据库中的uppercid用户下的所有收藏夹信息
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchUpperCollectionTask(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
+pub struct FetchUpperCollection(pub ECSHandleResult<(UpperCid, u64), anyhow::Error>);
 
-impl FetchUpperCollectionTask {
+impl FetchUpperCollection {
     pub fn new(db: Db, runtimer: &mut TokioTasksRuntime, cid: UpperCid, cookies: String) -> Self {
         let task = runtimer.spawn_background_task(move |_ctx| Self::task(db, cid, cookies));
 

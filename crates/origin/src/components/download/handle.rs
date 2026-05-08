@@ -16,7 +16,7 @@ use crate::{
     api::BiliApi,
     components::{
         download::{MediaInfoAidPayload, MediaInfoBvidPayload},
-        downloadtask::{handle::TaskId, load::LoadDownloadtaskTask},
+        downloadtask::{handle::TaskId, load::LoadDownloadtask},
         fetch::handle::Loadable,
         handle::{ECSHandle, ECSHandleResult},
         status::handle::{DownloadruleId, StatusId},
@@ -139,7 +139,7 @@ impl DownloadPendding for MediaUniqueId {
         async {
             let media_id = self.media_aid().await?;
 
-            let realted_taskids = LoadDownloadtaskTask::load_with(db, |select| {
+            let realted_taskids = LoadDownloadtask::load_with(db, |select| {
                 select.filter(downloadtask::Column::Id.eq(media_id))
             })
             .await

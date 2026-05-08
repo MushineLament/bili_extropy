@@ -79,4 +79,14 @@ pub trait Loadable {
 
 /// Pending fetch media infomation into sql.
 #[derive(Debug, Component, Deref, DerefMut)]
-pub struct FetchPendingMediaId(pub MediaAid);
+pub struct FetchPendingMedia(pub MediaAid);
+
+/// if has this mark,will fetch data then compute into sql
+#[derive(Debug, Component, Default, Clone, PartialEq, Eq, Hash)]
+pub struct FetchTask;
+
+/// update sql data,cover sql old data
+/// this is spawn a check load,so this component is dyn remove.
+#[derive(Debug, Component, Default, Clone, PartialEq, Eq, Hash)]
+#[component(storage = "SparseSet")]
+pub struct FetchCheck;

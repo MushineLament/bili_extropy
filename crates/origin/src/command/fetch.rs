@@ -3,14 +3,14 @@ use bevy::{
     ecs::{
         entity::Entity,
         message::MessageReader,
-        query::With,
+        query::{Has, With},
         system::{Commands, Query, Res, ResMut},
     },
 };
 
 use bevy_tokio_tasks::TokioTasksRuntime;
 
-use sea_orm::{ColumnTrait, QueryFilter};
+use sea_orm::{ActiveValue, ColumnTrait, QueryFilter};
 use tracing::{error, info};
 
 use crate::{
@@ -18,20 +18,28 @@ use crate::{
     components::{
         account::handle::ActiveAccounts,
         download::{MediaBvidOrAid, MediaUniqueId},
-        downloadtask::load::LoadDownloadtaskRelatedMediasTask,
+        downloadtask::{
+            handle::DownloadtaskRelatedUpperMedias,
+            insert::{InsertDownloadtaskRelatedMedias, InsertTask},
+            load::{LoadDownloadtask, LoadDownloadtaskMedias, LoadDownloadtaskRelatedMedias},
+        },
         fetch::{
-            handle::FetchPendingMediaId,
+            handle::{FetchCheck, FetchPendingMedia, FetchTask},
             task::{
-                FetchAccountCollectionIdTask, FetchAccountFollowingTask, FetchCollectMediasTask,
-                FetchMediaTask, FetchUpperCollectionTask, FetchUpperFollowingTask,
-                FetchUpperMediasTask,
+                FetchAccountCollectionId, FetchAccountFollowing, FetchCollectMedias, FetchMedia,
+                FetchUpperCollection, FetchUpperFollowing, FetchUpperMedias,
             },
         },
         list::load::LoadMediasTask,
     },
     console::ConsoleTrims,
     db::Db,
-    entity::media::{self},
+    entity::{
+        downloadtask,
+        downloadtask_medias::DownloadtaskMediasActiveModel,
+        media::{self},
+        upper::UPPER,
+    },
 };
 
 pub const HELP_FETCH: &str = r#"
@@ -87,7 +95,11 @@ impl Plugin for CommandFetchPlugin {
                 fetch_upper_medias_task,
                 fetch_collect_medias_task,
                 fetch_media_task,
-                fetch_pending_media_id,
+                fetch_pending_media,
+                fetch_downloadtask_medias,
+                fetch_downloadtask_related_medias,
+                insert_downloadtask_related_medias,
+                downloadtask_related_upper_medias,
             ),
         );
     }
@@ -147,10 +159,13 @@ pub fn spawn_fetch_task(
                             .models_mut()
                             .into_iter()
                             .map(|account| {
-                                FetchAccountFollowingTask::new(
-                                    db.clone(),
-                                    account.clone(),
-                                    runtimer.as_mut(),
+                                (
+                                    FetchAccountFollowing::new(
+                                        db.clone(),
+                                        account.clone(),
+                                        runtimer.as_mut(),
+                                    ),
+                                    FetchTask,
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -162,10 +177,13 @@ pub fn spawn_fetch_task(
                             .models_mut()
                             .into_iter()
                             .map(|account| {
-                                FetchAccountCollectionIdTask::new(
-                                    db.clone(),
-                                    account.clone(),
-                                    runtimer.as_mut(),
+                                (
+                                    FetchAccountCollectionId::new(
+                                        db.clone(),
+                                        account.clone(),
+                                        runtimer.as_mut(),
+                                    ),
+                                    FetchTask,
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -182,12 +200,14 @@ pub fn spawn_fetch_task(
                         ids.into_iter()
                             .map(|id| {
                                 info!("Fetching upper following with id<{}>", id);
-
-                                FetchUpperFollowingTask::new(
-                                    db.clone(),
-                                    id,
-                                    runtimer.as_mut(),
-                                    cookies.to_string(),
+                                (
+                                    FetchTask,
+                                    FetchUpperFollowing::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.to_string(),
+                                    ),
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -198,11 +218,14 @@ pub fn spawn_fetch_task(
                         ids.into_iter()
                             .map(|id| {
                                 info!("spawn fetch upper<{}>'s collection task", id);
-                                FetchUpperCollectionTask::new(
-                                    db.clone(),
-                                    runtimer.as_mut(),
-                                    id,
-                                    cookies.to_string(),
+                                (
+                                    FetchUpperCollection::new(
+                                        db.clone(),
+                                        runtimer.as_mut(),
+                                        id,
+                                        cookies.to_string(),
+                                    ),
+                                    FetchTask,
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -214,11 +237,14 @@ pub fn spawn_fetch_task(
                         ids.into_iter()
                             .map(|id| {
                                 info!("spawn fetch upper<{}>'s medias task", id);
-                                FetchUpperMediasTask::new(
-                                    db.clone(),
-                                    id,
-                                    runtimer.as_mut(),
-                                    cookies.to_string(),
+                                (
+                                    FetchUpperMedias::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.to_string(),
+                                    ),
+                                    FetchTask,
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -235,11 +261,14 @@ pub fn spawn_fetch_task(
                     commands.spawn_batch(
                         ids.into_iter()
                             .map(|id| {
-                                FetchCollectMediasTask::new(
-                                    db.clone(),
-                                    id,
-                                    runtimer.as_mut(),
-                                    cookies.to_string(),
+                                (
+                                    FetchCollectMedias::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.to_string(),
+                                    ),
+                                    FetchTask,
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -252,13 +281,31 @@ pub fn spawn_fetch_task(
             },
 
             Some("task") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
-                Some("medias") => {}
-                Some("all") => {
-                    info!("related downloadtask and medias");
-                    commands.spawn(LoadDownloadtaskRelatedMediasTask::new(
-                        db.clone(),
-                        runtimer.as_mut(),
+                Some("upper") => {
+                    // fetch upper's medias into downloadtask_medias
+                    info!("spawn fetch downloadtask related upper's medias task");
+                    commands.spawn((
+                        LoadDownloadtask::new_with(db.clone(), runtimer.as_mut(), |select| {
+                            select.filter(downloadtask::Column::TypeId.eq(UPPER))
+                        }),
+                        DownloadtaskRelatedUpperMedias,
                     ));
+                }
+
+                Some("medias") => {
+                    // fetch downloadtask_medias
+                    info!("spawn fetch downloadtask's medias task");
+                    commands.spawn((
+                        LoadDownloadtaskMedias::new(db.clone(), runtimer.as_mut()),
+                        FetchTask,
+                    ));
+                }
+                Some("related") => {
+                    commands.spawn((
+                        LoadDownloadtaskRelatedMedias::new(db.clone(), runtimer.as_mut()),
+                        FetchTask,
+                    ));
+                    info!("related downloadtask and medias");
                 }
                 Some(unkown) => {
                     error!("not has this subcommand: {:?}", unkown);
@@ -291,7 +338,7 @@ pub fn spawn_fetch_task(
                             bvids
                                 .into_iter()
                                 .map(|bvid| {
-                                    FetchMediaTask::new(
+                                    FetchMedia::new(
                                         db.clone(),
                                         MediaBvidOrAid(bvid).parse(),
                                         runtimer.as_mut(),
@@ -319,7 +366,7 @@ pub fn spawn_fetch_task(
 
 pub fn fetch_upper_collection_task(
     mut commands: Commands,
-    query: Query<(&mut FetchUpperCollectionTask, Entity)>,
+    query: Query<(&mut FetchUpperCollection, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -344,7 +391,7 @@ pub fn fetch_upper_collection_task(
 
 pub fn fetch_account_collection_id_task(
     mut commands: Commands,
-    query: Query<(&mut FetchAccountCollectionIdTask, Entity)>,
+    query: Query<(&mut FetchAccountCollectionId, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -369,7 +416,7 @@ pub fn fetch_account_collection_id_task(
 
 pub fn fetch_upper_following_task(
     mut commands: Commands,
-    query: Query<(&mut FetchUpperFollowingTask, Entity)>,
+    query: Query<(&mut FetchUpperFollowing, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -394,7 +441,7 @@ pub fn fetch_upper_following_task(
 
 pub fn fetch_account_following_task(
     mut commands: Commands,
-    query: Query<(&mut FetchAccountFollowingTask, Entity)>,
+    query: Query<(&mut FetchAccountFollowing, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -419,7 +466,7 @@ pub fn fetch_account_following_task(
 
 pub fn fetch_collect_medias_task(
     mut commands: Commands,
-    query: Query<(&mut FetchCollectMediasTask, Entity)>,
+    query: Query<(&mut FetchCollectMedias, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -444,9 +491,7 @@ pub fn fetch_collect_medias_task(
 
 pub fn fetch_upper_medias_task(
     mut commands: Commands,
-    query: Query<(&mut FetchUpperMediasTask, Entity)>,
-    db: Res<Db>,
-    mut runtimer: ResMut<TokioTasksRuntime>,
+    query: Query<(&mut FetchUpperMedias, Entity)>,
 ) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
@@ -470,14 +515,7 @@ pub fn fetch_upper_medias_task(
                         .iter()
                         .map(|media_id| {
                             let media_id = *media_id;
-                            (
-                                FetchPendingMediaId(media_id),
-                                LoadMediasTask::new_with(
-                                    db.clone(),
-                                    runtimer.as_mut(),
-                                    move |select| select.filter(media::Column::Aid.eq(media_id)),
-                                ),
-                            )
+                            (FetchPendingMedia(media_id),)
                         })
                         .collect::<Vec<_>>();
 
@@ -491,7 +529,7 @@ pub fn fetch_upper_medias_task(
     }
 }
 
-pub fn fetch_media_task(mut commands: Commands, query: Query<(&mut FetchMediaTask, Entity)>) {
+pub fn fetch_media_task(mut commands: Commands, query: Query<(&mut FetchMedia, Entity)>) {
     for (mut handle, entity) in query {
         if !handle.is_finished() {
             continue;
@@ -510,14 +548,15 @@ pub fn fetch_media_task(mut commands: Commands, query: Query<(&mut FetchMediaTas
     }
 }
 
-pub fn fetch_pending_media_id(
+pub fn fetch_pending_media(
     mut commands: Commands,
     mut pending_fetchs: Query<(
-        &mut FetchPendingMediaId,
+        &mut FetchPendingMedia,
+        Has<FetchCheck>,
         Option<&mut LoadMediasTask>, //check befor fetch
         Entity,
     )>,
-    fetching: Query<(), With<FetchMediaTask>>,
+    fetching: Query<(), With<FetchMedia>>,
     db: Res<Db>,
     mut runtimer: ResMut<TokioTasksRuntime>,
     mut active_account: ResMut<ActiveAccounts>,
@@ -541,7 +580,21 @@ pub fn fetch_pending_media_id(
 
     let pendings = (0..sub).map(|_| iter.next()).filter_map(|pending| pending);
 
-    for (fetch, load, entity) in pendings {
+    for (fetch, is_update, load, entity) in pendings {
+        if is_update {
+            let mdeia_id = fetch.0;
+
+            commands
+                .entity(entity)
+                .remove::<FetchCheck>()
+                .insert(LoadMediasTask::new_with(
+                    db.clone(),
+                    runtimer.as_mut(),
+                    move |select| select.filter(media::Column::Aid.eq(mdeia_id)),
+                ));
+            continue;
+        }
+
         if let Some(mut result) = load {
             match result.try_result() {
                 Ok(result) => {
@@ -558,7 +611,7 @@ pub fn fetch_pending_media_id(
             };
         }
 
-        commands.spawn(FetchMediaTask::new(
+        commands.spawn(FetchMedia::new(
             db.clone(),
             MediaUniqueId::Aid(fetch.0),
             runtimer.as_mut(),
@@ -569,5 +622,174 @@ pub fn fetch_pending_media_id(
 
     if pending_fetchs.count() < 4 && fetching.count() < 4 {
         info!("fetch media taks all is finished");
+    }
+}
+
+pub fn fetch_downloadtask_medias(
+    mut commands: Commands,
+    query: Query<(&mut LoadDownloadtaskMedias, Has<FetchCheck>, Entity), With<FetchTask>>,
+) {
+    for (mut handle, update, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok(medias) => {
+                if update {
+                    let iter = medias
+                        .iter()
+                        .map(|media| (FetchPendingMedia(media.media_id), FetchCheck))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                } else {
+                    let iter = medias
+                        .iter()
+                        .map(|media| FetchPendingMedia(media.media_id))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                }
+
+                info!("spawn fetch downloadtask medias is finished");
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_downloadtask_related_medias(
+    mut commands: Commands,
+    query: Query<(&mut LoadDownloadtaskRelatedMedias, Has<FetchCheck>, Entity), With<FetchTask>>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+) {
+    for (mut handle, update, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok(medias) => {
+                if update {
+                    let iter = medias
+                        .iter()
+                        .map(|(mediaid, _)| (FetchPendingMedia(*mediaid), FetchCheck))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                } else {
+                    let iter = medias
+                        .iter()
+                        .map(|(mediaid, _)| FetchPendingMedia(*mediaid))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                }
+
+                let models = medias
+                    .iter()
+                    .map(|(media_id, relateds)| {
+                        relateds
+                            .taskid
+                            .iter()
+                            .map(|task_id| DownloadtaskMediasActiveModel {
+                                task_id: ActiveValue::Set(*task_id),
+                                media_id: ActiveValue::Set(*media_id),
+                                state: ActiveValue::Set("Pending".to_string()),
+                            })
+                    })
+                    .flatten()
+                    .collect::<Vec<_>>();
+
+                info!("models count:{:?}", models.len());
+
+                commands.spawn((
+                    InsertDownloadtaskRelatedMedias::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                        models.into_iter(),
+                    ),
+                    InsertTask,
+                ));
+
+                info!("spawn fetch downloadtask medias is finished");
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn insert_downloadtask_related_medias(
+    mut commands: Commands,
+    query: Query<(&mut InsertDownloadtaskRelatedMedias, Entity), With<InsertTask>>,
+) {
+    for (mut task, entity) in query {
+        if !task.is_finished() {
+            continue;
+        }
+        match task.try_result() {
+            Ok(result) => {
+                info!("insert downloadtask related medias count<{}>", result);
+            }
+            Err(err) => {
+                error!("insert downloadtask related medias error: {:?}", err);
+            }
+        };
+        commands.entity(entity).despawn();
+    }
+}
+
+pub fn downloadtask_related_upper_medias(
+    mut commands: Commands,
+    query: Query<(&mut LoadDownloadtask, Entity), With<DownloadtaskRelatedUpperMedias>>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+    mut active_account: ResMut<ActiveAccounts>,
+) {
+    for (mut task, entity) in query {
+        if !task.is_finished() {
+            continue;
+        }
+        match task.try_result() {
+            Ok(result) => {
+                let Some(cookies) = active_account.get_first_cookies_mut() else {
+                    continue;
+                };
+
+                let iter = result
+                    .iter()
+                    .filter(|model| model.type_id.eq(UPPER))
+                    .map(|upper| {
+                        (
+                            FetchUpperMedias::new(
+                                db.clone(),
+                                upper.generic_id,
+                                runtimer.as_mut(),
+                                cookies.to_string(),
+                            ),
+                            FetchTask,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                commands.spawn_batch(iter);
+
+                info!("fetch downloadtask related upper's medias");
+            }
+            Err(err) => {
+                error!("fetch downloadtask related upper's medias error: {:?}", err);
+            }
+        };
+        commands.entity(entity).despawn();
     }
 }

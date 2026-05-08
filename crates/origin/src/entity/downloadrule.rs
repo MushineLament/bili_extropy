@@ -4,9 +4,9 @@ use sea_orm::{ActiveValue, entity::prelude::*};
 use std::borrow::Cow;
 
 // ========== 向后兼容别名 ==========
-pub use ActiveModel as DownloadruleActiveModel;
-pub use Entity as DownloadruleEntity;
-pub use Model as DownloadruleModel;
+pub type DownloadruleActiveModel = ActiveModel;
+pub type DownloadruleEntity = Entity;
+pub type DownloadruleModel = Model;
 
 use crate::table::ToTableRecord;
 

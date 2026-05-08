@@ -3,7 +3,7 @@ use bevy::app::Plugin;
 use crate::command::{
     account::CommmandAccountPlugin, downloadrule::CommandDownloadrulePlugin,
     downloadtask::CommandDownloadtaskPlugin, fetch::CommandFetchPlugin, help::CommandHelpPlugin,
-    list::CommandListPlugin, status::CommandStatusPlugin,
+    list::CommandListPlugin, pull::CommandPullPlugin, status::CommandStatusPlugin,
 };
 
 pub mod account;
@@ -13,6 +13,7 @@ pub mod downloadtask;
 pub mod fetch;
 pub mod help;
 pub mod list;
+pub mod pull;
 pub mod status;
 
 pub const HELP: &str = "help";
@@ -27,6 +28,7 @@ impl Plugin for CommandPlugin {
             .add_plugins(CommandStatusPlugin)
             .add_plugins(CommandHelpPlugin)
             .add_plugins(CommandDownloadrulePlugin)
-            .add_plugins(CommandDownloadtaskPlugin);
+            .add_plugins(CommandDownloadtaskPlugin)
+            .add_plugins(CommandPullPlugin);
     }
 }

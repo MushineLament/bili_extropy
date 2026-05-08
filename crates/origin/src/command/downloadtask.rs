@@ -14,8 +14,8 @@ use crate::{
     command::HELP,
     components::{
         account::handle::ActiveAccounts,
-        downloadtask::{handle::InsertDownloadtaskTask, load::LoadDownloadtaskRelatedMediasTask},
-        list::handle::ListDownloadtaskTask,
+        downloadtask::{handle::InsertDownloadtaskTask, load::LoadDownloadtask},
+        list::handle::ListTask,
     },
     console::ConsoleTrims,
     db::Db,
@@ -51,10 +51,8 @@ pub struct CommandDownloadtaskPlugin;
 
 impl Plugin for CommandDownloadtaskPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(PreUpdate, spawn_list_task).add_systems(
-            Update,
-            (download_rule_insert_task, related_downloadtask_medias_task),
-        );
+        app.add_systems(PreUpdate, spawn_list_task)
+            .add_systems(Update, (insert_downloadtask_task,));
     }
 }
 
@@ -126,13 +124,16 @@ pub fn spawn_list_task(
 
             None => {
                 // 输出help
-                commands.spawn(ListDownloadtaskTask::new(db.clone(), runtimer.as_mut()));
+                commands.spawn((
+                    LoadDownloadtask::new(db.clone(), runtimer.as_mut()),
+                    ListTask,
+                ));
             }
         }
     }
 }
 
-pub fn download_rule_insert_task(
+pub fn insert_downloadtask_task(
     mut commands: Commands,
     query: Query<(&mut InsertDownloadtaskTask, Entity)>,
 ) {
@@ -144,31 +145,6 @@ pub fn download_rule_insert_task(
         match task.try_result() {
             Ok(result) => {
                 info!("insert a task id<{}>", result);
-            }
-            Err(err) => {
-                error!("insert a task error: {:?}", err);
-            }
-        }
-
-        commands.entity(entity).despawn();
-    }
-}
-
-pub fn related_downloadtask_medias_task(
-    mut commands: Commands,
-    query: Query<(&mut LoadDownloadtaskRelatedMediasTask, Entity)>,
-) {
-    for (mut task, entity) in query {
-        if !task.is_finished() {
-            continue;
-        }
-
-        match task.try_result() {
-            Ok(result) => {
-                for (mediaid, _related) in result {
-                    info!("media<{}>", mediaid);
-                }
-                info!("related downloadtask with medias");
             }
             Err(err) => {
                 error!("insert a task error: {:?}", err);

@@ -20,8 +20,8 @@ use tracing::{error, info};
 
 use crate::{
     components::{
-        handle::ECSHandleResult, initialize::DbInitailizeComponent,
-        list::handle::ListDownloadruleTask, status::handle::StatusState,
+        downloadrule::load::LoadDownloadrule, handle::ECSHandleResult,
+        initialize::DbInitailizeComponent, status::handle::StatusState,
     },
     console::ConsoleTrims,
     db::Db,
@@ -65,7 +65,7 @@ pub struct CommandDownloadrulePlugin;
 impl Plugin for CommandDownloadrulePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.init_resource::<ActiveDownloadrule>()
-            .add_systems(PostStartup, LoadDownloadruleTask::new.to_system())
+            .add_systems(PostStartup, LoadDownloadrule::new.to_system())
             .add_systems(
                 Update,
                 (
@@ -114,7 +114,7 @@ pub fn spawn_list_task(
 
             None => {
                 // 输出help
-                commands.spawn(ListDownloadruleTask::new(db.clone(), runtimer.as_mut()));
+                commands.spawn(LoadDownloadrule::new(db.clone(), runtimer.as_mut()));
             }
         }
     }
@@ -169,25 +169,9 @@ impl DownloadRuleInsertTask {
 #[derive(Debug, Resource, Deref, DerefMut, Default, Clone)]
 pub struct ActiveDownloadrule(pub Arc<HashMap<i64, DownloadruleModel>>);
 
-#[derive(Debug, Component, Deref, DerefMut)]
-pub struct LoadDownloadruleTask(
-    pub ECSHandleResult<Vec<downloadrule::DownloadruleModel>, anyhow::Error>,
-);
-
-impl LoadDownloadruleTask {
-    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = async move {
-            let medias = downloadrule::DownloadruleEntity::find().all(&db.db).await?;
-            Ok(medias)
-        };
-        let handle = runtimer.spawn_background_task(|_ctx| task);
-        Self(ECSHandleResult::new(handle))
-    }
-}
-
 pub fn active_downloadrule(
     mut res: ResMut<ActiveDownloadrule>,
-    query: Query<&mut LoadDownloadruleTask>,
+    query: Query<&mut LoadDownloadrule>,
 ) {
     for mut task in query {
         let Ok(result) = task.try_result().map_err(|err| {
