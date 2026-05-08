@@ -6,6 +6,8 @@ use sea_orm::entity::prelude::*;
 
 use crate::table::ToTableRecord;
 
+pub const COLLECTION: &str = "Collection";
+
 // ========== 向后兼容别名 ==========
 pub use Entity as CollectionEntity;
 pub use Model as CollectionModel;
@@ -19,7 +21,6 @@ pub struct Model {
     pub collection_id: i64,
     pub name: String,
     pub count: i64,
-    pub state: String,
 }
 
 // ========== 关系定义 ==========
@@ -79,13 +80,12 @@ impl ActiveModelBehavior for ActiveModel {}
 
 // ========== 表格显示 trait 实现 ==========
 
-impl ToTableRecord<4> for Model {
-    fn to_record(&self) -> [Cow<'_, str>; 4] {
+impl ToTableRecord<3> for Model {
+    fn to_record(&self) -> [Cow<'_, str>; 3] {
         [
             Cow::Owned(self.collection_id.to_string()),
             Cow::Borrowed(&self.name),
             Cow::Owned(self.count.to_string()),
-            Cow::Borrowed(&self.state),
         ]
     }
 }
@@ -95,12 +95,12 @@ use serde::Deserialize;
 use crate::entity::media::{MediaCollection, MediaUp};
 
 #[derive(Debug, Deserialize)]
-pub struct ListSetResp {
-    pub data: ListSetData,
+pub struct ListUpperCollectResp {
+    pub data: ListUpperCollectData,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ListSetData {
+pub struct ListUpperCollectData {
     pub list: Vec<Collection>,
 }
 

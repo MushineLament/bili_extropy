@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use sea_orm::entity::prelude::*;
 
-use crate::table::ToTableRecord;
+use crate::{entity::UpperCid, table::ToTableRecord};
 
 type Entity = AccountEntity;
 type Model = AccountModel;
@@ -20,7 +20,7 @@ impl EntityName for AccountEntity {
 
 #[derive(Clone, Debug, PartialEq, DeriveModel, DeriveActiveModel, Eq)]
 pub struct AccountModel {
-    pub account_id: i64,
+    pub account_id: UpperCid,
     pub name: String,
     pub cookies: String,
     pub state: String,
@@ -90,7 +90,7 @@ impl RelationTrait for Relation {
             Self::SetAccount => {
                 AccountEntity::has_many(super::account_collection::AccountCollectionEntity).into()
             }
-            Self::UpAccount => AccountEntity::has_many(super::up_account::Entity).into(),
+            Self::UpAccount => AccountEntity::has_many(super::upper_account::Entity).into(),
         }
     }
 }
@@ -101,7 +101,7 @@ impl Related<super::account_collection::AccountCollectionEntity> for AccountEnti
     }
 }
 
-impl Related<super::up_account::Entity> for AccountEntity {
+impl Related<super::upper_account::Entity> for AccountEntity {
     fn to() -> RelationDef {
         Relation::UpAccount.def()
     }
@@ -116,12 +116,12 @@ impl Related<super::collection::CollectionEntity> for AccountEntity {
     }
 }
 
-impl Related<super::up::Entity> for AccountEntity {
+impl Related<super::upper::Entity> for AccountEntity {
     fn to() -> RelationDef {
-        super::up_account::Relation::Up.def()
+        super::upper_account::Relation::Up.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(super::up_account::Relation::Account.def().rev())
+        Some(super::upper_account::Relation::Account.def().rev())
     }
 }
 

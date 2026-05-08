@@ -1,23 +1,34 @@
 use bevy::app::Plugin;
 
 use crate::command::{
-    auth::CommmandLoginPlugin, fetch::CommandFetchPlugin, list::CommandListPlugin,
-    status::CommandStatusPlugin,
+    account::CommmandAccountPlugin, downloadrule::CommandDownloadrulePlugin,
+    downloadtask::CommandDownloadtaskPlugin, fetch::CommandFetchPlugin, help::CommandHelpPlugin,
+    list::CommandListPlugin, pull::CommandPullPlugin, status::CommandStatusPlugin,
 };
 
-pub mod auth;
+pub mod account;
 pub mod clone;
+pub mod downloadrule;
+pub mod downloadtask;
 pub mod fetch;
+pub mod help;
 pub mod list;
+pub mod pull;
 pub mod status;
+
+pub const HELP: &str = "help";
 
 pub struct CommandPlugin;
 
 impl Plugin for CommandPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_plugins(CommandListPlugin)
-            .add_plugins(CommmandLoginPlugin)
+            .add_plugins(CommmandAccountPlugin)
             .add_plugins(CommandFetchPlugin)
-            .add_plugins(CommandStatusPlugin);
+            .add_plugins(CommandStatusPlugin)
+            .add_plugins(CommandHelpPlugin)
+            .add_plugins(CommandDownloadrulePlugin)
+            .add_plugins(CommandDownloadtaskPlugin)
+            .add_plugins(CommandPullPlugin);
     }
 }

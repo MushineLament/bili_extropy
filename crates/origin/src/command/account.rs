@@ -1,28 +1,52 @@
 use bevy::{
-    app::{Plugin, PostStartup, Update},
+    app::{Plugin, PostStartup, PreUpdate, Update},
     ecs::{
+        change_detection::MaybeLocation,
+        entity::Entity,
         message::MessageReader,
-        system::{Commands, Res, ResMut},
+        system::{Commands, Local, Query, Res, ResMut},
     },
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::{
+    command::HELP,
     components::{
-        auth::handle::{ActiveAccounts, AuthLoginTask},
-        initialize::DbInitailizeResource as _,
+        account::handle::{ActiveAccounts, AuthLoginTask},
+        initialize::DbInitailizeResource,
     },
     console::ConsoleTrims,
     db::Db,
 };
 
-pub struct CommmandLoginPlugin;
+pub const HELP_ACCOUNT: &str = r#"
+Back up your favorite bilibili online resources with RESP.
 
-impl Plugin for CommmandLoginPlugin {
+Usage: account <COMMAND> [SUB_COMMAND] [OPTIONS] 
+
+Commands:
+    login                           Login user account to bilibili.
+
+Options:
+    -v,         --verbose           Show debug messages
+    -h,         --help              Print help
+    -V,         --version           Print version
+
+Example:
+    account login                   # login bilibili.
+"#;
+
+const ACCOUN_COMMAND_INDEX: usize = 2;
+const _ACCOUN_SUBCOMMAND_INDEX: usize = 3;
+
+pub struct CommmandAccountPlugin;
+
+impl Plugin for CommmandAccountPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_systems(PostStartup, ActiveAccounts::new.to_system())
-            .add_systems(Update, command_login);
+            .add_systems(PreUpdate, command_login)
+            .add_systems(Update, auth_login_task);
     }
 }
 
@@ -34,23 +58,61 @@ pub fn command_login(
 ) {
     for message in console_message.read() {
         let db = db.clone();
-        let (args, _argv) = argmap::parse(message.0.iter());
+        let ConsoleTrims { args, argv: _ } = message;
 
-        if !args.get(1).is_some_and(|list| list.eq("auth")) {
+        if !args.get(1).is_some_and(|list| list.eq("account")) {
             continue;
         }
 
-        match args.get(2).map(String::as_str) {
+        match args.get(ACCOUN_COMMAND_INDEX).map(String::as_str) {
             Some("login") => {
                 commands.spawn(AuthLoginTask::new(db, runtimer.as_mut()));
+            }
+            Some(help) if help.to_lowercase().eq(HELP) => {
+                info!("/n{}", HELP_ACCOUNT);
             }
             Some(unkown) => {
                 error!("not has this command: {:?}", unkown);
             }
             None => {
                 // 输出help
+                info!("/n{}", HELP_ACCOUNT);
             }
         }
+    }
+}
+
+pub fn auth_login_task(
+    mut commands: Commands,
+    query: Query<(&mut AuthLoginTask, Entity)>,
+    mut has_change: Local<bool>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+) {
+    for (mut task, entity) in query {
+        let Ok(result) = task.try_result() else {
+            continue;
+        };
+
+        info!(
+            "update active account<{}>, name<{}>",
+            result.account_id, result.name
+        );
+
+        commands.entity(entity).try_despawn();
+
+        if !*has_change {
+            *has_change = true;
+        }
+    }
+
+    if *has_change {
+        commands.insert_resource(ActiveAccounts::new(db.clone(), runtimer.as_mut()));
+        commands.queue(|world: &mut bevy::ecs::world::World| {
+            let mut building = world.resource_mut::<ActiveAccounts>();
+            let result = building.block_on().unwrap();
+            info!("result:{:?},caller: {:?}", result, MaybeLocation::caller());
+        });
     }
 }
 

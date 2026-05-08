@@ -68,17 +68,17 @@ impl ToTableRecord<4> for &StatusModel {
 // 关系定义（如果有）
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "crate::entity::collection::CollectionEntity")]
-    MediaSet,
+    #[sea_orm(has_many = "crate::entity::status_downloadrule::Entity")]
+    StatusDownloadrule,
 }
 
-// 关联关系实现（保持与原逻辑一致）
-impl Related<crate::entity::collection::CollectionEntity> for Entity {
+impl Related<crate::entity::downloadrule::DownloadruleEntity> for Entity {
     fn to() -> RelationDef {
-        crate::entity::collection_media::Relation::Set.def()
+        // 通过中间表进行多对多关联
+        super::status_downloadrule::Relation::Downloadrule.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(crate::entity::collection_media::Relation::Media.def().rev())
+        Some(super::status_downloadrule::Relation::Status.def().rev())
     }
 }
 

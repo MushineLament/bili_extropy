@@ -3,12 +3,14 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::{
-    entity::{BvId, MediaAid, Title, UpperCid, up::Upper},
+    entity::{BvId, MediaAid, Title, UpperCid, upper::Upper},
     table::ToTableRecord,
 };
 
-pub use self::Entity as MediaEntity;
-pub use self::Model as MediaModel;
+pub const MEDIA: &str = "Media";
+
+pub type MediaEntity = Entity;
+pub type MediaModel = Model;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, DeriveEntityModel, Deserialize)]
 #[sea_orm(table_name = "media")]
@@ -31,17 +33,9 @@ pub struct Model {
     #[serde(default)]
     pub r#type: String,
 
-    #[sea_orm(default_value = "normal")]
-    #[serde(skip_deserializing, default = "default_state")]
-    pub state: String,
-
     #[sea_orm(ignore)]
     #[serde(default)]
     pub pic: Option<Url>,
-}
-
-fn default_state() -> String {
-    "normal".to_string()
 }
 
 // 关系定义 - 使用具体结构体名称
@@ -49,7 +43,7 @@ fn default_state() -> String {
 pub enum Relation {
     #[sea_orm(has_many = "crate::entity::collection_media::CollectionMediaEntity")]
     MediaSet,
-    #[sea_orm(has_many = "crate::entity::up_media::UpMediaEntity")]
+    #[sea_orm(has_many = "crate::entity::upper_media::Entity")]
     MediaUp,
 }
 
@@ -59,7 +53,7 @@ impl Related<crate::entity::collection_media::CollectionMediaEntity> for Entity 
     }
 }
 
-impl Related<crate::entity::up_media::UpMediaEntity> for Entity {
+impl Related<crate::entity::upper_media::UpperMediaEntity> for Entity {
     fn to() -> RelationDef {
         Relation::MediaUp.def()
     }
@@ -74,25 +68,35 @@ impl Related<crate::entity::collection::CollectionEntity> for Entity {
     }
 }
 
-impl Related<crate::entity::up::Entity> for Entity {
+impl Related<crate::entity::upper::Entity> for Entity {
     fn to() -> RelationDef {
-        crate::entity::up_media::Relation::Up.def()
+        crate::entity::upper_media::Relation::Upper.def()
     }
     fn via() -> Option<RelationDef> {
-        Some(crate::entity::up_media::Relation::Media.def().rev())
+        Some(crate::entity::upper_media::Relation::Media.def().rev())
     }
 }
 
 impl ActiveModelBehavior for ActiveModel {}
 
-impl ToTableRecord<5> for Model {
-    fn to_record(&self) -> [Cow<'_, str>; 5] {
+impl ToTableRecord<4> for Model {
+    fn to_record(&self) -> [Cow<'_, str>; 4] {
         [
             Cow::Owned(self.aid.to_string()),
             Cow::Borrowed(&self.bv_id),
             Cow::Borrowed(&self.title),
             Cow::Owned(self.r#type.to_string()),
-            Cow::Borrowed(&self.state),
+        ]
+    }
+}
+
+impl ToTableRecord<4> for &Model {
+    fn to_record(&self) -> [Cow<'_, str>; 4] {
+        [
+            Cow::Owned(self.aid.to_string()),
+            Cow::Borrowed(&self.bv_id),
+            Cow::Borrowed(&self.title),
+            Cow::Owned(self.r#type.to_string()),
         ]
     }
 }
@@ -140,6 +144,8 @@ pub struct Media {
     #[serde(default)]
     pub r#type: MediaType,
     pub pic: Url,
+    /// 视频公开时间
+    pub pubdate: u64,
 }
 
 #[derive(Debug, Deserialize)]

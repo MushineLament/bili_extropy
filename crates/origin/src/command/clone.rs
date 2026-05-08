@@ -1,9 +1,10 @@
+use std::{mem, time::Duration};
+
 use bevy::{
-    app::{Plugin, PostUpdate, Update},
+    app::{Plugin, PostUpdate, PreUpdate, Update},
     ecs::{
         entity::Entity,
         message::MessageReader,
-        schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
     },
 };
@@ -12,50 +13,126 @@ use indicatif::{MultiProgress, ProgressDrawTarget};
 use tracing::{error, info};
 
 use crate::{
+    command::{HELP, downloadrule::ActiveDownloadrule},
     components::{
-        auth::handle::ActiveAccounts,
-        download::{DownloadHandle, DownloadList, DownloadWay},
-        status::handle::ActiveStatus,
+        account::handle::ActiveAccounts,
+        download::{
+            DownloadFileError, DownloadFileErrorKind, DownloadHandle, DownloadPendding,
+            MediaBvidOrAid,
+        },
+        downloadtask::handle::DownloadtaskRelatedMediaPending,
+        status::handle::{ActiveStatus, StatusRelatedDownloadrule},
     },
     console::ConsoleTrims,
     db::Db,
 };
+
+pub const HELP_CLONE: &str = r#"
+Back up your favorite bilibili online resources with RESP.
+
+Usage: clone <COMMAND> [SUB_COMMAND] [OPTIONS]
+
+Commands:
+    media                       Download media.
+        <BvId>                  Download Single media.
+
+Options:
+    -v,         --verbose       Show debug messages
+    -h,         --help          Print help
+    -V,         --version       Print version
+
+Example:
+    clone media BV1dWcoe2EdF
+    clone media 113844248642487
+"#;
+
+pub const CLONE_COMMAND_INDEX: usize = 2;
+pub const CLONE_SUBCOMMAND_INDEX: usize = 3;
+pub const CLONE_OPTION_INDEX: usize = 4;
+
 pub struct DownloadPlugin;
 
 impl Plugin for DownloadPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.init_resource::<DownloadList>()
-            .add_systems(
-                Update,
-                (
-                    upsert_download_list,
-                    spawn_download_task.after(upsert_download_list),
-                ),
-            )
+        app.add_systems(PreUpdate, upsert_download_list)
+            .add_systems(Update, spawn_download_task)
             .add_systems(PostUpdate, download_task_finished);
     }
 }
 
 pub fn upsert_download_list(
     mut console_message: MessageReader<ConsoleTrims>,
-    mut lists: ResMut<DownloadList>,
+    runtimer: ResMut<TokioTasksRuntime>,
 ) {
     for message in console_message.read() {
-        let (args, _argv) = argmap::parse(message.0.iter());
+        let ConsoleTrims { args, argv: _ } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("clone")) {
             continue;
         }
 
-        match args.get(2).map(String::as_str) {
-            Some(str) => {
-                let way = DownloadWay::new(str);
+        match args.get(CLONE_COMMAND_INDEX).map(String::as_str) {
+            Some("media") => {
+                let Some(media_id) = args.get(CLONE_SUBCOMMAND_INDEX).map(String::as_str) else {
+                    error!("not is a media's bvid or aid");
+                    continue;
+                };
 
-                info!("add a download media<{:?}> task", way.0);
-                lists.push(way);
+                let way = MediaBvidOrAid::new(media_id.to_string()).parse();
+                runtimer.spawn_background_task(move |mut ctx| async move {
+                    let timer = tokio::time::timeout(Duration::from_secs(3), async {
+                        let infomation = way.to_response().await?;
+
+                        infomation
+                            .data
+                            .ok_or(DownloadFileError::new(DownloadFileErrorKind::MediaPage))
+                    });
+
+                    let Ok(result) = timer.await else {
+                        error!(
+                            "add a download media<{}> task error, time response overflow",
+                            way.as_str()
+                        );
+                        return;
+                    };
+
+                    match result {
+                        Ok(media) => {
+                            info!("add a download media<{:?}> task", media.aid);
+                            let _ = ctx
+                                .run_on_main_thread(move |world| {
+                                    let mut building = world.world.resource_mut::<ActiveAccounts>();
+                                    if building.try_result().is_ok_and(|result| result.is_empty()) {
+                                        error!(
+                                            "No active account found. Please make sure login first."
+                                        );
+                                    }
+
+                                    world.world.spawn(DownloadtaskRelatedMediaPending {
+                                        media_id: media.aid,
+                                        taskid: vec![],
+                                    });
+                                })
+                                .await;
+                        }
+                        Err(err) => {
+                            error!(
+                                "add a download media<{}> task error: {:?}",
+                                way.as_str(),
+                                err
+                            );
+                        }
+                    }
+                });
+            }
+            Some(help) if help.to_lowercase().eq(HELP) => {
+                info!("/n{}", HELP_CLONE);
+            }
+            Some(unkown) => {
+                error!("not has this command: {:?}", unkown);
             }
             None => {
-                // 输出help
+                info!("/n{}", HELP_CLONE);
             }
         }
     }
@@ -65,56 +142,52 @@ pub fn spawn_download_task(
     mut commands: Commands,
     db: Res<Db>,
     mut runtimer: ResMut<TokioTasksRuntime>,
-    mut lists: ResMut<DownloadList>,
-    mut accounts: ResMut<ActiveAccounts>,
+    mut active_account: ResMut<ActiveAccounts>,
     query_handle: Query<&DownloadHandle>,
-    mut active_status: ResMut<ActiveStatus>,
+    active_status: ResMut<ActiveStatus>,
+    active_downloadrule: ResMut<ActiveDownloadrule>,
+    status_related_downloadrule: ResMut<StatusRelatedDownloadrule>,
+
+    mut pending_lists: Query<(&mut DownloadtaskRelatedMediaPending, Entity)>,
 ) {
-    if lists.is_empty() {
+    if pending_lists.count() <= 0 {
         return;
     }
 
-    let take_count = 4 - query_handle.count() as i8;
+    let count = query_handle.count();
 
-    if take_count <= 0 {
+    let Some(sub) = 4usize.checked_sub(count).filter(|sub| *sub != 0) else {
         return;
-    }
+    };
+
+    let Some(cookies) = active_account.get_first_cookies_mut() else {
+        error!("not any active account, fetch media failed");
+        return;
+    };
 
     let bars = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
 
-    let Some(account) = accounts
-        .try_result()
-        .ok()
-        .and_then(|accounts| accounts.first())
-    else {
-        error!("No active account found. Please make sure login first.");
-        return;
-    };
+    let mut iter = pending_lists.iter_mut();
 
-    let take_count = if take_count as usize > lists.len() {
-        lists.len()
-    } else {
-        take_count as usize
-    };
+    let pendings = (0..sub).map(|_| iter.next()).filter_map(|pending| pending);
 
-    let status = match active_status.try_result() {
-        Ok(result) => result,
-        Err(err) => {
-            error!("get active status error:{:?}", err);
-            return;
-        }
-    };
-
-    for list in lists.drain(0..take_count) {
+    for (mut list, entity) in pendings {
         info!("spawn a download handle");
+
+        let list = mem::take(list.as_mut());
+
         commands.spawn(DownloadHandle::new(
             db.clone(),
             bars.clone(),
-            &account.cookies,
+            cookies,
             list,
             runtimer.as_mut(),
-            status.clone(),
+            active_status.0.clone(),
+            active_downloadrule.0.clone(),
+            status_related_downloadrule.0.clone(),
         ));
+
+        commands.entity(entity).try_despawn();
     }
 }
 
@@ -131,7 +204,7 @@ pub fn download_task_finished(mut commands: Commands, query: Query<(&mut Downloa
                 info!("download task handle finishied media<{:?}>", bvid);
             }
             Err(err) => {
-                info!("download task handle error:{:?}", err);
+                error!("download task handle error:{:?}", err);
             }
         }
 

@@ -1,35 +1,359 @@
 use bevy::{
-    app::{Plugin, Update},
-    ecs::message::MessageReader,
+    app::{Plugin, PreUpdate, Update},
+    ecs::{
+        entity::Entity,
+        message::MessageReader,
+        query::{Has, With},
+        system::{Commands, Query, Res, ResMut},
+    },
 };
 
-use tracing::error;
+use bevy_tokio_tasks::TokioTasksRuntime;
 
-use crate::console::ConsoleTrims;
+use sea_orm::{ActiveValue, ColumnTrait, QueryFilter};
+use tracing::{error, info};
+
+use crate::{
+    command::HELP,
+    components::{
+        account::handle::ActiveAccounts,
+        download::{MediaBvidOrAid, MediaUniqueId},
+        downloadtask::{
+            handle::DownloadtaskRelatedUpperMedias,
+            insert::{InsertDownloadtaskRelatedMedias, InsertTask},
+            load::{LoadDownloadtask, LoadDownloadtaskMedias, LoadDownloadtaskRelatedMedias},
+        },
+        fetch::{
+            handle::{FetchCheck, FetchPendingMedia, FetchTask},
+            task::{
+                FetchAccountCollectionId, FetchAccountFollowing, FetchCollectMedias, FetchMedia,
+                FetchUpperCollection, FetchUpperFollowing, FetchUpperMedias,
+            },
+        },
+        list::load::LoadMediasTask,
+    },
+    console::ConsoleTrims,
+    db::Db,
+    entity::{
+        downloadtask,
+        downloadtask_medias::DownloadtaskMediasActiveModel,
+        media::{self},
+        upper::UPPER,
+    },
+};
+
+pub const HELP_FETCH: &str = r#"
+Back up your favorite bilibili online resources with RESP.
+
+Usage: fetch <COMMAND> [SUB_COMMAND] [OPTIONS] 
+
+Commands:
+    account                     Fetch data related to a login account.
+        followings                  Fetch account's followed list.
+        collections                 Fetch account's collections list.
+
+    upper                       Fetch data related to an Upper.
+        followings [--id]           Fetch upper's followed list. If not point id, default use account's id. 
+        collections [--id]          Fetch upper's collection list. If not point id, default use account's id. 
+        medias [--id]               Fetch upper's media list. If not point id, default use account's id. 
+
+    collection                  Fetch data related to a Collection.
+        medias                      Fetch collection's media list.
+    
+    media                       Fetch data related media.
+        <BvId>/<Aid>                Fetch data related to a single media.
+
+    help                        Print this.
+
+Options:
+    -v,         --verbose           Show debug messages
+    -h,         --help              Print help
+    -V,         --version           Print version
+    -id [ID],   --id [ID]           Point ID
+
+Example:
+    fetch account followings                     # uses active account ID
+    fetch account followings --id 328853714         # override account ID
+    fetch upper followings
+    fetch media BV1dWcoe2EdF
+"#;
+
+const FETCH_COMMAND_INDEX: usize = 2;
+const FETCH_SUBCOMMAND_INDEX: usize = 3;
 
 pub struct CommandFetchPlugin;
 
 impl Plugin for CommandFetchPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(Update, spawn_fetch_task);
+        app.add_systems(PreUpdate, spawn_fetch_task).add_systems(
+            Update,
+            (
+                fetch_account_following_task,
+                fetch_account_collection_id_task,
+                fetch_upper_following_task,
+                fetch_upper_collection_task,
+                fetch_upper_medias_task,
+                fetch_collect_medias_task,
+                fetch_media_task,
+                fetch_pending_media,
+                fetch_downloadtask_medias,
+                fetch_downloadtask_related_medias,
+                insert_downloadtask_related_medias,
+                downloadtask_related_upper_medias,
+            ),
+        );
     }
 }
 
 pub fn spawn_fetch_task(
     mut console_message: MessageReader<ConsoleTrims>,
-    // db: Res<Db>,
-    // mut commands: Commands,
-    // mut runtimer: ResMut<TokioTasksRuntime>,
+    db: Res<Db>,
+    mut commands: Commands,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+    mut active_account: ResMut<ActiveAccounts>,
 ) {
+    if console_message.is_empty() {
+        return;
+    }
+
+    let account_ids = active_account.ids_mut().into_iter().collect::<Vec<_>>();
+
+    let Some(account_model) = active_account.get_first_models_mut().cloned() else {
+        error!("not any active account");
+        return;
+    };
+
+    let cookies = account_model.cookies.as_str();
+
     for message in console_message.read() {
         // let db = db.clone();
-        let (args, _argv) = argmap::parse(message.0.iter());
+        let ConsoleTrims { args, argv: _ } = message;
 
         if !args.get(1).is_some_and(|list| list.eq("fetch")) {
             continue;
         }
 
-        match args.get(2).map(String::as_str) {
+        let point_id = message
+            .ids()
+            .into_iter()
+            .filter_map(|str| str.parse::<i64>().ok())
+            .collect::<Vec<_>>();
+
+        let ids = if point_id.is_empty() {
+            account_ids.clone()
+        } else {
+            point_id
+        };
+
+        if ids.is_empty() {
+            error!("not any point id or active account");
+            continue;
+        }
+
+        match args.get(FETCH_COMMAND_INDEX).map(String::as_str) {
+            // 上述有问题
+            Some("account") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("followings") => {
+                    commands.spawn_batch(
+                        active_account
+                            .models_mut()
+                            .into_iter()
+                            .map(|account| {
+                                (
+                                    FetchAccountFollowing::new(
+                                        db.clone(),
+                                        account.clone(),
+                                        runtimer.as_mut(),
+                                    ),
+                                    FetchTask,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Some("collections") => {
+                    commands.spawn_batch(
+                        active_account
+                            .models_mut()
+                            .into_iter()
+                            .map(|account| {
+                                (
+                                    FetchAccountCollectionId::new(
+                                        db.clone(),
+                                        account.clone(),
+                                        runtimer.as_mut(),
+                                    ),
+                                    FetchTask,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {}
+            },
+            Some("upper") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("followings") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                info!("Fetching upper following with id<{}>", id);
+                                (
+                                    FetchTask,
+                                    FetchUpperFollowing::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.to_string(),
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Some("collections") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                info!("spawn fetch upper<{}>'s collection task", id);
+                                (
+                                    FetchUpperCollection::new(
+                                        db.clone(),
+                                        runtimer.as_mut(),
+                                        id,
+                                        cookies.to_string(),
+                                    ),
+                                    FetchTask,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+
+                Some("medias") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                info!("spawn fetch upper<{}>'s medias task", id);
+                                (
+                                    FetchUpperMedias::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.to_string(),
+                                    ),
+                                    FetchTask,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {}
+            },
+            Some("collection") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("medias") => {
+                    commands.spawn_batch(
+                        ids.into_iter()
+                            .map(|id| {
+                                (
+                                    FetchCollectMedias::new(
+                                        db.clone(),
+                                        id,
+                                        runtimer.as_mut(),
+                                        cookies.to_string(),
+                                    ),
+                                    FetchTask,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Some(unkown) => {
+                    error!("not has this command: {:?}", unkown);
+                }
+                None => {}
+            },
+
+            Some("task") => match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                Some("upper") => {
+                    // fetch upper's medias into downloadtask_medias
+                    info!("spawn fetch downloadtask related upper's medias task");
+                    commands.spawn((
+                        LoadDownloadtask::new_with(db.clone(), runtimer.as_mut(), |select| {
+                            select.filter(downloadtask::Column::TypeId.eq(UPPER))
+                        }),
+                        DownloadtaskRelatedUpperMedias,
+                    ));
+                }
+
+                Some("medias") => {
+                    // fetch downloadtask_medias
+                    info!("spawn fetch downloadtask's medias task");
+                    commands.spawn((
+                        LoadDownloadtaskMedias::new(db.clone(), runtimer.as_mut()),
+                        FetchTask,
+                    ));
+                }
+                Some("related") => {
+                    commands.spawn((
+                        LoadDownloadtaskRelatedMedias::new(db.clone(), runtimer.as_mut()),
+                        FetchTask,
+                    ));
+                    info!("related downloadtask and medias");
+                }
+                Some(unkown) => {
+                    error!("not has this subcommand: {:?}", unkown);
+                }
+                None => {
+                    error!("not any subcommand");
+                }
+            },
+
+            Some("media") => {
+                let bvids = message
+                    .ids()
+                    .into_iter()
+                    .map(|str| str.to_string())
+                    .collect::<Vec<_>>();
+
+                match args.get(FETCH_SUBCOMMAND_INDEX).map(String::as_str) {
+                    // Some("collectionid") => {
+                    //     commands.spawn(FetchCollectMediasData::new(
+                    //         db.clone(),
+                    //         id,
+                    //         runtimer.as_mut(),
+                    //     ));
+                    // }
+                    Some(unkown) => {
+                        error!("not has this command: {:?}", unkown);
+                    }
+                    None => {
+                        commands.spawn_batch(
+                            bvids
+                                .into_iter()
+                                .map(|bvid| {
+                                    FetchMedia::new(
+                                        db.clone(),
+                                        MediaBvidOrAid(bvid).parse(),
+                                        runtimer.as_mut(),
+                                        cookies.to_string(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                }
+            }
+
+            Some(help) if help.to_lowercase().eq(HELP) => {
+                error!("\n{}", help);
+            }
             Some(unkown) => {
                 error!("not has this command: {:?}", unkown);
             }
@@ -40,334 +364,432 @@ pub fn spawn_fetch_task(
     }
 }
 
-// pub async fn fetch(prune: bool) -> Result<()> {
-//     let db = db(false).await;
-//     let accounts = db
-//         .get_accounts_filtered(account::Column::State.eq(AccountState::Active))
-//         .await?;
-//     for account in accounts.iter() {
-//         add_cookie_jar(parse_cookies(&account.cookies));
+pub fn fetch_upper_collection_task(
+    mut commands: Commands,
+    query: Query<(&mut FetchUpperCollection, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
 
-//         let account_id = account.account_id;
+        commands.entity(entity).try_despawn();
 
-//         info!("Fetching sets with account<{}>", account.name);
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
 
-//         let ListSetResp {
-//             data: ListSetData { list },
-//         } = BiliApi::request(ListSetPayload { up_mid: account_id }).await?;
+pub fn fetch_account_collection_id_task(
+    mut commands: Commands,
+    query: Query<(&mut FetchAccountCollectionId, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
 
-//         if !list.is_empty() {
-//             db.upsert_collections(list.iter().map(|set| {
-//                 debug!("Updating set<{}>", set.title);
-//                 collection::CollectionModel {
-//                     collection_id: set.id,
-//                     name: set.title.to_owned(),
-//                     count: set.media_count,
-//                     state: SetState::Inactive.to_string(), // conflic skip
-//                 }
-//             }))
-//             .await?;
-//             db.upsert_set_accounts(list.iter().map(|set| {
-//                 debug!("Linking account<{}> and set<{}>", account.name, set.title,);
-//                 account_collection::AccountCollectionModel {
-//                     collection_id: set.id,
-//                     account_id,
-//                 }
-//             }))
-//             .await?;
-//         }
+        commands.entity(entity).try_despawn();
 
-//         let mut old_set_ids: HashSet<i64> =
-//             HashSet::from_iter(db.get_set_ids_of_account(account_id).await?);
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
 
-//         for set in list {
-//             old_set_ids.remove(&set.id);
-//         }
+pub fn fetch_upper_following_task(
+    mut commands: Commands,
+    query: Query<(&mut FetchUpperFollowing, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
 
-//         for set_id in old_set_ids {
-//             db.delete_set_account(account_collection::AccountCollectionModel {
-//                 collection_id: set_id,
-//                 account_id,
-//             })
-//             .await?;
-//             warn!("Unlinked account<{}> and set<{}>", account.name, set_id,);
-//         }
+        commands.entity(entity).try_despawn();
 
-//         info!("Fetching following ups with account<{}>", account.name);
-//         let FollowingNumResp {
-//             data: FollowingNumData { following },
-//         } = BiliApi::request(FollowingNumPayload { vmid: account_id })
-//             .await
-//             .context("Failed to fetch following ups number")?;
-//         if following == 0 {
-//             continue;
-//         }
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
 
-//         let page = (following - 1) / 50 + 1;
+pub fn fetch_account_following_task(
+    mut commands: Commands,
+    query: Query<(&mut FetchAccountFollowing, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
 
-//         let mut tasks = futures::stream::iter(1..=page)
-//             .map(|pn| async move {
-//                 let FollowingUpResp {
-//                     data: FollowingUpData { list },
-//                 } = BiliApi::request(FollowingUpPayload {
-//                     vmid: account_id,
-//                     pn,
-//                     ps: 50,
-//                 })
-//                 .await
-//                 .context(format!("Failed to fetch following ups' page {pn}"))?;
-//                 Ok::<_, anyhow::Error>(list)
-//             })
-//             .buffer_unordered(8);
-//         let mut ups = vec![];
-//         while let Some(res) = tasks.next().await {
-//             match res {
-//                 Ok(list) => ups.extend(list),
-//                 Err(e) => error!("{}", e),
-//             }
-//         }
-//         let mut old_following_ids: HashSet<i64> =
-//             HashSet::from_iter(db.get_up_ids_of_account(account_id).await?);
-//         if !ups.is_empty() {
-//             db.upsert_ups(ups.iter().map(|up| {
-//                 debug!("Updating following up<{}>", up.name);
-//                 up::Model {
-//                     up_id: up.mid,
-//                     name: up.name.to_owned(),
-//                     state: UpState::Inactive.to_string(),
-//                 }
-//             }))
-//             .await?;
-//             db.upsert_up_accounts(ups.iter().map(|up| {
-//                 debug!("Linking account<{}> and up<{}>", account.name, up.name);
-//                 up_account::Model {
-//                     up_id: up.mid,
-//                     account_id,
-//                 }
-//             }))
-//             .await?;
-//             for up in ups {
-//                 old_following_ids.remove(&up.mid);
-//             }
-//             for up_id in old_following_ids {
-//                 db.delete_up_account(up_account::Model { up_id, account_id })
-//                     .await?;
-//                 warn!("Unlinked account<{}> and up<{}>", account.name, up_id,);
-//             }
-//         }
-//     }
-//     let fetched_sets = DashSet::<i64>::new();
-//     for account in accounts.iter() {
-//         info!("Fetching set medias with account<{}>", account.name);
-//         add_cookie_jar(parse_cookies(&account.cookies));
-//         let account_id = account.account_id;
-//         let set_ids_of_account = db.get_set_ids_of_account(account_id).await?;
-//         for set_id in set_ids_of_account {
-//             if fetched_sets.contains(&set_id) {
-//                 continue;
-//             }
-//             let set = db.get_set(set_id).await?;
-//             if set.state != SetState::Active.to_string() || set.count == 0 {
-//                 continue;
-//             }
-//             info!("Fetching medias in set<{}>", set.name);
-//             let page = (set.count - 1) / 20 + 1;
-//             let mut tasks = futures::stream::iter(1..=page)
-//                 .map(|pn| async move {
-//                     // 通过收藏夹id，获取视频的id
-//                     let InSetResp {
-//                         data: InSetData { medias },
-//                     } = BiliApi::request(InSetPayload {
-//                         media_id: set.collection_id,
-//                         pn,
-//                         ps: 20,
-//                     })
-//                     .await
-//                     // .context(format!("Failed to fetch sets' page {pn}"))
-//                     ?;
-//                     Ok::<_, anyhow::Error>(medias)
-//                 })
-//                 .buffer_unordered(8);
-//             let mut medias = vec![];
-//             while let Some(res) = tasks.next().await {
-//                 match res {
-//                     Ok(list) => medias.extend(list),
-//                     Err(e) => error!("caller: {:?},{}", (file!(), line!()), e),
-//                 }
-//             }
-//             if !medias.is_empty() {
-//                 db.upsert_medias(medias.iter().map(|m| {
-//                     debug!("Updating media<{}>", m.title);
-//                     media::MediaModel {
-//                         aid: m.id,
-//                         bv_id: m.bv_id.to_owned(),
-//                         title: m.title.to_owned(),
-//                         r#type: m.r#type.to_string(),
-//                         state: MediaState::Pending.to_string(),
-//                         cid: m.upper.mid,
-//                     }
-//                 }))
-//                 .await?;
-//                 db.upsert_media_sets(medias.into_iter().map(|m| {
-//                     debug!("Linking media<{}> and set<{}>", m.title, set.name);
-//                     collection_media::CollectionMediaModel {
-//                         id: m.id,
-//                         collection_id: set_id,
-//                     }
-//                 }))
-//                 .await?;
-//             }
-//             fetched_sets.insert(set_id);
-//         }
-//     }
-//     let fetched_ups = DashSet::<i64>::new();
-//     for account in accounts.iter() {
-//         info!(
-//             "Fetching published contents of ups with account<{}>",
-//             account.name
-//         );
-//         add_cookie_jar(parse_cookies(&account.cookies));
-//         let account_id = account.account_id;
-//         let up_ids_of_account = db.get_up_ids_of_account(account_id).await?;
-//         for up_id in up_ids_of_account {
-//             if fetched_ups.contains(&up_id) {
-//                 continue;
-//             }
-//             let up = db.get_up(up_id).await?;
-//             if up.state != SetState::Active.to_string() {
-//                 continue;
-//             }
-//             let PublishNumResp {
-//                 data: PublishNumData { video },
-//             } = BiliApi::request(PublishNumPayload { mid: up_id }).await?;
-//             if video == 0 {
-//                 continue;
-//             }
-//             info!("Fetching published videos of up<{}>", up.name);
-//             let page = (video - 1) / 30 + 1;
-//             let mut tasks = futures::stream::iter(1..=page)
-//                 .map(|pn| async move {
-//                     let InUpResp {
-//                         data:
-//                             InUpData {
-//                                 list: InUpList { vlist },
-//                             },
-//                     } = BiliApi::request(InUpPayload::new(up_id, pn, 30).await?)
-//                         .await
-//                         .map_err(|err| {
-//                             anyhow::anyhow!("Failed to fetch up space page {pn}, error: {:?}", err)
-//                         })?;
-//                     Ok::<_, anyhow::Error>(vlist)
-//                 })
-//                 .buffer_unordered(8);
-//             let mut medias = vec![];
-//             while let Some(res) = tasks.next().await {
-//                 match res {
-//                     Ok(list) => medias.extend(list),
-//                     Err(e) => error!("{}", e),
-//                 }
-//             }
-//             if !medias.is_empty() {
-//                 db.upsert_medias(medias.iter().map(|m| {
-//                     debug!("Updating media<{}>", m.title);
-//                     media::MediaModel {
-//                         aid: m.id,
-//                         bv_id: m.bv_id.to_owned(),
-//                         title: m.title.to_owned(),
-//                         r#type: m.r#type.to_string(),
-//                         state: MediaState::Pending.to_string(),
-//                         cid: m.mid,
-//                     }
-//                 }))
-//                 .await?;
-//                 db.upsert_media_ups(medias.into_iter().map(|m| {
-//                     debug!("Linking media<{}> and up<{}>", m.title, up.name);
-//                     up_media::UpMediaModel { id: m.id, up_id }
-//                 }))
-//                 .await?;
-//             }
-//             fetched_ups.insert(up_id);
-//         }
-//     }
-//     let fetched_medias = Arc::new(DashSet::<i64>::new());
-//     for account in accounts.iter() {
-//         info!("Fetching media metadatas with account<{}>", account.name);
-//         add_cookie_jar(parse_cookies(&account.cookies));
-//         let medias = db.all_active_medias().await?;
-//         let mut tasks = futures::stream::iter(
-//             medias
-//                 .into_iter()
-//                 .filter(|media| !fetched_medias.contains(&media.aid)),
-//         )
-//         .map(|media| async move {
-//             match BiliApi::request(MediaInfoAidPayload { aid: media.aid }).await? {
-//                 MediaInfoResp {
-//                     data: Some(MediaInfoData { owner, staff, .. }),
-//                     code: 0,
-//                     ..
-//                 } => Ok((owner, staff, media)),
-//                 MediaInfoResp {
-//                     message: option_msg,
-//                     ..
-//                 } => Err(anyhow!(
-//                     "Info unreachable media<{} {}>: {}",
-//                     media.title,
-//                     media.aid,
-//                     option_msg.unwrap_or_default()
-//                 )),
-//             }
-//         })
-//         .buffer_unordered(128);
-//         let mut media_ups = vec![];
-//         let mut ups = HashMap::new();
-//         while let Some(res) = tasks.next().await {
-//             match res {
-//                 Ok((owner, staff, media)) => {
-//                     ups.insert(owner.mid, owner.clone());
-//                     media_ups.push((media.clone(), owner));
-//                     if let Some(staff) = staff {
-//                         staff.into_iter().for_each(|staff| {
-//                             ups.insert(staff.mid, staff.clone());
-//                             media_ups.push((media.clone(), staff));
-//                         });
-//                     }
-//                 }
-//                 Err(e) => error!("{}", e),
-//             }
-//         }
-//         if !ups.is_empty() {
-//             db.upsert_ups(ups.into_values().map(|up| {
-//                 debug!("Updating up<{}>", up.name);
-//                 up::Model {
-//                     up_id: up.mid,
-//                     name: up.name,
-//                     state: UpState::Inactive.to_string(),
-//                 }
-//             }))
-//             .await?;
-//         }
-//         if !media_ups.is_empty() {
-//             db.upsert_media_ups(media_ups.iter().map(|(media, up)| {
-//                 debug!("Linking media<{}> and up<{}>", media.title, up.name);
-//                 up_media::UpMediaModel {
-//                     id: media.aid,
-//                     up_id: up.mid,
-//                 }
-//             }))
-//             .await?;
-//         }
-//         for (media, _) in media_ups.into_iter() {
-//             fetched_medias.insert(media.aid);
-//         }
-//     }
-//     if prune {
-//         info!("Pruning unfaved sets");
-//         db.prune_sets().await?;
-//         info!("Pruning unfollowed ups");
-//         db.prune_ups().await?;
-//         info!("Pruning unfollowed medias");
-//         db.prune_medias().await?;
-//     }
-//     info!("Finished fetching");
-//     Ok(())
-// }
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_collect_medias_task(
+    mut commands: Commands,
+    query: Query<(&mut FetchCollectMedias, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{:?}> collection is finished,state:{:?}",
+                    cid, state
+                );
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_upper_medias_task(
+    mut commands: Commands,
+    query: Query<(&mut FetchUpperMedias, Entity)>,
+) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        let upper_id = handle.upper_cid;
+        let fetch_medias = handle.fetch_medias;
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!(
+                    "fetch upper<{}>'s medias is finished,state:{}",
+                    upper_id, state
+                );
+
+                if fetch_medias {
+                    let fetchs = cid
+                        .iter()
+                        .map(|media_id| {
+                            let media_id = *media_id;
+                            (FetchPendingMedia(media_id),)
+                        })
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(fetchs);
+                }
+            }
+            Err(err) => {
+                error!("fetch upper medias error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_media_task(mut commands: Commands, query: Query<(&mut FetchMedia, Entity)>) {
+    for (mut handle, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok((cid, state)) => {
+                info!("fetch media<{}> is finished,state:{}", *cid, state);
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_pending_media(
+    mut commands: Commands,
+    mut pending_fetchs: Query<(
+        &mut FetchPendingMedia,
+        Has<FetchCheck>,
+        Option<&mut LoadMediasTask>, //check befor fetch
+        Entity,
+    )>,
+    fetching: Query<(), With<FetchMedia>>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+    mut active_account: ResMut<ActiveAccounts>,
+) {
+    if pending_fetchs.count() <= 0 {
+        return;
+    }
+
+    let count = fetching.count();
+
+    let Some(sub) = 4usize.checked_sub(count).filter(|sub| *sub != 0) else {
+        return;
+    };
+
+    let Some(cookies) = active_account.get_first_cookies_mut() else {
+        error!("not any active account, fetch media failed");
+        return;
+    };
+
+    let mut iter = pending_fetchs.iter_mut();
+
+    let pendings = (0..sub).map(|_| iter.next()).filter_map(|pending| pending);
+
+    for (fetch, is_update, load, entity) in pendings {
+        if is_update {
+            let mdeia_id = fetch.0;
+
+            commands
+                .entity(entity)
+                .remove::<FetchCheck>()
+                .insert(LoadMediasTask::new_with(
+                    db.clone(),
+                    runtimer.as_mut(),
+                    move |select| select.filter(media::Column::Aid.eq(mdeia_id)),
+                ));
+            continue;
+        }
+
+        if let Some(mut result) = load {
+            match result.try_result() {
+                Ok(result) => {
+                    if result.iter().find(|model| model.aid == fetch.0).is_some() {
+                        commands.entity(entity).try_despawn();
+                        continue;
+                    }
+                }
+                Err(err) => {
+                    if !err.is_finished() {
+                        continue;
+                    }
+                }
+            };
+        }
+
+        commands.spawn(FetchMedia::new(
+            db.clone(),
+            MediaUniqueId::Aid(fetch.0),
+            runtimer.as_mut(),
+            cookies.to_string(),
+        ));
+        commands.entity(entity).try_despawn();
+    }
+
+    if pending_fetchs.count() < 4 && fetching.count() < 4 {
+        info!("fetch media taks all is finished");
+    }
+}
+
+pub fn fetch_downloadtask_medias(
+    mut commands: Commands,
+    query: Query<(&mut LoadDownloadtaskMedias, Has<FetchCheck>, Entity), With<FetchTask>>,
+) {
+    for (mut handle, update, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok(medias) => {
+                if update {
+                    let iter = medias
+                        .iter()
+                        .map(|media| (FetchPendingMedia(media.media_id), FetchCheck))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                } else {
+                    let iter = medias
+                        .iter()
+                        .map(|media| FetchPendingMedia(media.media_id))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                }
+
+                info!("spawn fetch downloadtask medias is finished");
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn fetch_downloadtask_related_medias(
+    mut commands: Commands,
+    query: Query<(&mut LoadDownloadtaskRelatedMedias, Has<FetchCheck>, Entity), With<FetchTask>>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+) {
+    for (mut handle, update, entity) in query {
+        if !handle.is_finished() {
+            continue;
+        }
+
+        commands.entity(entity).try_despawn();
+
+        match handle.try_result() {
+            Ok(medias) => {
+                if update {
+                    let iter = medias
+                        .iter()
+                        .map(|(mediaid, _)| (FetchPendingMedia(*mediaid), FetchCheck))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                } else {
+                    let iter = medias
+                        .iter()
+                        .map(|(mediaid, _)| FetchPendingMedia(*mediaid))
+                        .collect::<Vec<_>>();
+
+                    commands.spawn_batch(iter);
+                }
+
+                let models = medias
+                    .iter()
+                    .map(|(media_id, relateds)| {
+                        relateds
+                            .taskid
+                            .iter()
+                            .map(|task_id| DownloadtaskMediasActiveModel {
+                                task_id: ActiveValue::Set(*task_id),
+                                media_id: ActiveValue::Set(*media_id),
+                                state: ActiveValue::Set("Pending".to_string()),
+                            })
+                    })
+                    .flatten()
+                    .collect::<Vec<_>>();
+
+                info!("models count:{:?}", models.len());
+
+                commands.spawn((
+                    InsertDownloadtaskRelatedMedias::new(
+                        db.clone(),
+                        runtimer.as_mut(),
+                        models.into_iter(),
+                    ),
+                    InsertTask,
+                ));
+
+                info!("spawn fetch downloadtask medias is finished");
+            }
+            Err(err) => {
+                error!("fetch upper collection error:{:?}", err);
+            }
+        }
+    }
+}
+
+pub fn insert_downloadtask_related_medias(
+    mut commands: Commands,
+    query: Query<(&mut InsertDownloadtaskRelatedMedias, Entity), With<InsertTask>>,
+) {
+    for (mut task, entity) in query {
+        if !task.is_finished() {
+            continue;
+        }
+        match task.try_result() {
+            Ok(result) => {
+                info!("insert downloadtask related medias count<{}>", result);
+            }
+            Err(err) => {
+                error!("insert downloadtask related medias error: {:?}", err);
+            }
+        };
+        commands.entity(entity).despawn();
+    }
+}
+
+pub fn downloadtask_related_upper_medias(
+    mut commands: Commands,
+    query: Query<(&mut LoadDownloadtask, Entity), With<DownloadtaskRelatedUpperMedias>>,
+    db: Res<Db>,
+    mut runtimer: ResMut<TokioTasksRuntime>,
+    mut active_account: ResMut<ActiveAccounts>,
+) {
+    for (mut task, entity) in query {
+        if !task.is_finished() {
+            continue;
+        }
+        match task.try_result() {
+            Ok(result) => {
+                let Some(cookies) = active_account.get_first_cookies_mut() else {
+                    continue;
+                };
+
+                let iter = result
+                    .iter()
+                    .filter(|model| model.type_id.eq(UPPER))
+                    .map(|upper| {
+                        (
+                            FetchUpperMedias::new(
+                                db.clone(),
+                                upper.generic_id,
+                                runtimer.as_mut(),
+                                cookies.to_string(),
+                            ),
+                            FetchTask,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                commands.spawn_batch(iter);
+
+                info!("fetch downloadtask related upper's medias");
+            }
+            Err(err) => {
+                error!("fetch downloadtask related upper's medias error: {:?}", err);
+            }
+        };
+        commands.entity(entity).despawn();
+    }
+}

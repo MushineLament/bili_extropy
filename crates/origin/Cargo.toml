@@ -8,6 +8,8 @@ bevy = { version = "0.18.1", default-features = false, features = [
     "bevy_log",
     "track_location",
     "trace",
+    "debug",
+    "keyboard",
 ] }
 tokio = { version = "1", default-features = false, features = [
     "macros",
@@ -55,7 +57,10 @@ rsmpeg = { version = "0.18", features = ["ffmpeg8"] }
 bevy-tokio-tasks = "0.18.0"
 
 itertools = "0.14.0"
-rustyline = "18.0.0"
+rustyline = { version = "18.0.0" }
 shell-words = "1.1"
 argmap = "1.1.2"
 strum = { version = "0.28.0", features = ["derive"] }
+chrono = "0.4.44"
+bytes = "1.11.1"
+bimap = "0.6.3"

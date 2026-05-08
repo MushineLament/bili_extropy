@@ -24,3 +24,37 @@ impl<'a, T: ToTableRecord<N>, const N: usize> ToTable<T, N> for std::slice::Iter
         table
     }
 }
+
+impl<'a, K, T: ToTableRecord<N>, const N: usize> ToTable<T, N>
+    for std::collections::hash_map::Values<'a, K, T>
+{
+    fn table_head<IH: IntoIterator<Item = H>, H: Into<String>>(self, header: IH) -> Table {
+        let mut table = Builder::new();
+
+        table.push_record(header);
+
+        for record in self.into_iter() {
+            table.push_record(record.to_record());
+        }
+        let mut table = table.build();
+        table.with(Style::markdown());
+        table
+    }
+}
+
+impl<'a, K, T: ToTableRecord<N>, const N: usize> ToTable<T, N>
+    for bevy::platform::collections::hash_map::Values<'a, K, T>
+{
+    fn table_head<IH: IntoIterator<Item = H>, H: Into<String>>(self, header: IH) -> Table {
+        let mut table = Builder::new();
+
+        table.push_record(header);
+
+        for record in self.into_iter() {
+            table.push_record(record.to_record());
+        }
+        let mut table = table.build();
+        table.with(Style::markdown());
+        table
+    }
+}

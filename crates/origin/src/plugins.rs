@@ -1,7 +1,6 @@
 use bevy::{
     MinimalPlugins,
     app::{App, Plugin},
-    log::LogPlugin,
 };
 use bevy_tokio_tasks::TokioTasksPlugin;
 
@@ -9,6 +8,7 @@ use crate::{
     command::{CommandPlugin, clone::DownloadPlugin},
     console::ConsolePlugin,
     db::DbPlugin,
+    log::ExtropyLogPlugin,
 };
 
 pub struct MainPlugin;
@@ -16,7 +16,11 @@ pub struct MainPlugin;
 impl Plugin for MainPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_plugins(MinimalPlugins)
-            .add_plugins(LogPlugin::default())
+            // .add_plugins(LogPlugin {
+            //     filter: "sqlx=off".to_string(),
+            //     ..Default::default()
+            // })
+            .add_plugins(ExtropyLogPlugin)
             .add_plugins(TokioTasksPlugin::default())
             .add_plugins(ConsolePlugin)
             .add_plugins(CommandPlugin)

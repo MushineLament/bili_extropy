@@ -1,45 +1,59 @@
 use std::{
     borrow::Cow,
+    fmt::{Debug, Display},
     fs::{self, File},
     hash::Hash,
-    io::{self, ErrorKind, Seek as _, Write as _},
+    io::{self, ErrorKind, Seek as _, SeekFrom, Write as _},
     mem,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 use crate::{
     api::BiliApi,
     components::{
         download::{MediaInfoAidPayload, MediaInfoBvidPayload},
+        downloadtask::{handle::TaskId, load::LoadDownloadtask},
+        fetch::handle::Loadable,
         handle::{ECSHandle, ECSHandleResult},
+        status::handle::{DownloadruleId, StatusId},
     },
     cookies::{add_cookie_jar, parse_cookies},
     db::Db,
     entity::{
         BvId, MediaAid,
+        downloadrule::DownloadruleModel,
+        downloadtask,
         media::{self, Media, MediaInfoData, MediaInfoResp, MediaInfoSingle, Page},
         status::StatusModel,
     },
     output::{EntryOuput, IndexAudio, IndexOuput, IndexVideo},
     payload::DashPayload,
     response::{self, Dash, DashData, DashResp},
-    state::MediaState,
 };
 use anyhow::{Result, anyhow};
-use api_req::{ApiCaller as _, error::ApiErr};
+use api_req::ApiCaller as _;
 use bevy::{
     ecs::{change_detection::MaybeLocation, component::Component},
-    platform::collections::{HashMap, HashSet, hash_map},
+    platform::{
+        collections::{HashMap, HashSet, hash_map},
+        hash::FixedHasher,
+    },
     prelude::{Deref, DerefMut},
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
+use bimap::BiHashMap;
+use bytes::BytesMut;
+use chrono::DateTime;
+use futures::{StreamExt, stream::FuturesUnordered};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use migration::OnConflict;
 use reqwest::{IntoUrl, Response, header::CONTENT_LENGTH};
 use sea_orm::{
-    ActiveValue::{Set, Unchanged},
-    EntityTrait as _, IntoActiveModel as _,
+    ActiveValue::Unchanged, ColumnTrait, EntityTrait as _, IntoActiveModel as _, QueryFilter,
 };
 use tempfile::NamedTempFile;
 use tracing::{error, info, warn};
@@ -50,73 +64,159 @@ const BAR_TEMPLATE: &str = "{msg} {spinner:.green} [{elapsed_precise}] [{wide_ba
 pub const TEMP_DOWNLOAD_FOLDER: &str = ".temp";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DownloadWay(pub String);
+pub struct MediaBvidOrAid(pub String);
 
-impl DownloadWay {
+impl MediaBvidOrAid {
     pub fn new<T: Into<String>>(str: T) -> Self {
         Self(str.into())
     }
 
-    pub async fn response(self) -> Result<MediaInfoSingle, ApiErr> {
-        let anyhow = anyhow::anyhow!("request aid media<{:?}>", self.0);
-
-        let aid = self.0.parse::<MediaAid>();
-
-        let response: Result<MediaInfoSingle, ApiErr> =
-            BiliApi::request(MediaInfoBvidPayload { bvid: self.0 }).await;
-
-        // first try BvId
-        if let Ok(media) = response {
-            return Ok(media);
-        };
-
-        let Ok(aid) = aid else {
-            // if not a mediacid and not a avlid bvid
-            error!(
-                "{:?}",
-                anyhow::anyhow!("{:?} error:{:?}", anyhow, MaybeLocation::caller())
-            );
-            return response;
-        };
-
-        let response: Result<MediaInfoSingle, ApiErr> =
-            BiliApi::request(MediaInfoAidPayload { aid }).await;
-
-        response
+    pub fn parse(self) -> MediaUniqueId {
+        match self.0.parse::<i64>() {
+            Ok(aid) => MediaUniqueId::Aid(aid),
+            Err(_) => MediaUniqueId::BvId(self.0),
+        }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MediaUniqueId {
+    Aid(i64),
+    BvId(String),
+}
+
+impl MediaUniqueId {
+    pub fn from_bvid_or_aid(r#type: MediaBvidOrAid) -> Self {
+        r#type.parse()
+    }
+
+    pub fn as_str(&self) -> Cow<'_, str> {
+        match self {
+            MediaUniqueId::Aid(aid) => Cow::Owned(aid.to_string()),
+            MediaUniqueId::BvId(bvid) => Cow::Borrowed(&bvid),
+        }
+    }
+}
+
+impl DownloadPendding for MediaUniqueId {
+    fn to_response(
+        &self,
+    ) -> impl Future<Output = Result<MediaInfoSingle, DownloadFileError>> + Send {
+        let handle = async {
+            let response: std::result::Result<MediaInfoSingle, DownloadFileError> = match self {
+                MediaUniqueId::Aid(aid) => BiliApi::request(MediaInfoAidPayload { aid: *aid })
+                    .await
+                    .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err))),
+                MediaUniqueId::BvId(bvid) => {
+                    BiliApi::request(MediaInfoBvidPayload { bvid: bvid.clone() })
+                        .await
+                        .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)))
+                }
+            };
+
+            response
+        };
+
+        handle
+    }
+
+    fn media_aid(&self) -> impl Future<Output = Result<MediaAid, DownloadFileError>> {
+        async {
+            let response = self.to_response().await?;
+
+            let media = response
+                .data
+                .ok_or(DownloadFileError::new(DownloadFileErrorKind::MediaPage))?;
+
+            Ok(media.aid)
+        }
+    }
+
+    fn related_task_id(
+        &self,
+        db: &Db,
+    ) -> impl Future<Output = Result<Vec<TaskId>, DownloadFileError>> {
+        async {
+            let media_id = self.media_aid().await?;
+
+            let realted_taskids = LoadDownloadtask::load_with(db, |select| {
+                select.filter(downloadtask::Column::Id.eq(media_id))
+            })
+            .await
+            .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::Db(err)))?;
+
+            Ok(realted_taskids.into_iter().map(|model| model.id).collect())
+        }
+    }
+
+    fn into_unique_id(self) -> MediaUniqueId {
+        self
+    }
+
+    fn massage(&self) -> impl Display {
+        self.as_str()
+    }
+}
+
+pub trait DownloadPendding {
+    fn into_unique_id(self) -> MediaUniqueId;
+
+    fn massage(&self) -> impl Display;
+
+    fn to_response(
+        &self,
+    ) -> impl Future<Output = Result<MediaInfoSingle, DownloadFileError>> + Send;
+
+    fn media_aid(&self) -> impl Future<Output = Result<MediaAid, DownloadFileError>>;
+
+    fn related_task_id(
+        &self,
+        db: &Db,
+    ) -> impl Future<Output = Result<Vec<TaskId>, DownloadFileError>>;
 }
 
 #[derive(Debug, Component, Deref, DerefMut)]
 pub struct DownloadHandle(pub ECSHandle<Result<BvId, DownloadFileError>>);
 
 impl DownloadHandle {
-    pub fn new<T: Into<String>>(
+    pub fn new<T: Into<String>, R: DownloadPendding + 'static + Send>(
         db: Db,
         bars: MultiProgress,
         cookies: T,
-        list: DownloadWay,
+        list: R,
         runtimer: &mut TokioTasksRuntime,
-        active_status: Cow<'static, Vec<StatusModel>>,
+        active_status: Arc<HashMap<i64, StatusModel>>,
+        active_downloadrule: Arc<HashMap<i64, DownloadruleModel>>,
+        status_related_downloadrule: Arc<
+            BiHashMap<StatusId, DownloadruleId, FixedHasher, FixedHasher>,
+        >,
     ) -> Self {
         let cookies = cookies.into();
         let task = async move {
             add_cookie_jar(parse_cookies(&cookies));
 
-            let bvid = list.0.clone();
+            let media = list.to_response().await?;
 
-            let media = list
-                .response()
-                .await
-                .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::ApiReq(err)));
-
-            let Ok(MediaInfoSingle {
+            let MediaInfoSingle {
                 code: _,
                 data: Some(media),
                 message: _,
-            }) = media
+            } = media
             else {
-                return media.map(|_| bvid);
+                return Err(DownloadFileError::new(DownloadFileErrorKind::MediaPage));
             };
+
+            let mediaid = media.aid;
+
+            // 时间符合要求的计算
+            let _allow = active_downloadrule.iter().filter(|(_ruleid, model)| {
+                DateTime::from_timestamp(media.pubdate as i64, 0)
+                    .map(|pubdate| model.default_relation_date(pubdate.naive_utc()))
+                    .unwrap_or_else(|| {
+                        error!("compute media<{:?}> public date time error,will ignore about time download rule.", mediaid);
+                        true
+                    })
+            });
 
             let aid = media.aid;
             let bvid = media.bvid.clone();
@@ -126,7 +226,6 @@ impl DownloadHandle {
                 bv_id: media.bvid.to_owned(),
                 title: media.title.to_owned(),
                 r#type: media.r#type.to_string(),
-                state: MediaState::Pending.to_string(),
                 cid: media.cid,
                 pic: None,
             };
@@ -140,7 +239,6 @@ impl DownloadHandle {
                                 media::Column::Cid,
                                 media::Column::Title,
                                 media::Column::Type,
-                                media::Column::State,
                             ])
                             .to_owned(),
                     )
@@ -161,6 +259,8 @@ impl DownloadHandle {
                 bars.clone(),
                 &Path::new(TEMP_DOWNLOAD_FOLDER),
                 active_status.as_ref(),
+                active_downloadrule.as_ref(),
+                status_related_downloadrule.as_ref(),
             )
             .await
             .map(|_| bvid);
@@ -173,41 +273,54 @@ impl DownloadHandle {
         Self(ECSHandle::new(handle))
     }
 
-    #[track_caller]
-    pub fn video(
+    pub async fn video_response(
         video: Option<&response::Video>,
         tmp_path: &Path,
         pb: DownloadProgressBar,
         total_bytes: Arc<AtomicU64>,
         file_entry_json: &mut EntryOuput,
         index_video: &mut IndexVideo,
-    ) -> Option<ECSHandleResult<TempFileReopen, DownloadFileError>> {
-        if video.is_none() {
+    ) -> Option<Result<DownloadFileResponse, DownloadFileError>> {
+        let Some(video) = video else {
             return None;
-        }
-        let file_video = video
-            .as_ref()
-            .and_then(|v| {
-                file_entry_json.update_video(v);
-                index_video.update_video(v);
-                DownloadFilePending::from_tmp_url(tmp_path, v.base_url.as_str()).ok()
-            })
-            .map(move |pending| {
-                pending
-                    .with_bg(pb)
-                    .into_ecs_handle_reopen_with_response("video.m4s", move |res| {
-                        if let Ok(size) = res.try_headers_size() {
-                            total_bytes.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
-                            res.pg.as_ref().map(|pg| pg.inc_length(size));
-                        }
-                    })
-            });
+        };
 
-        file_video
+        file_entry_json.update_video(video);
+        index_video.update_video(video);
+
+        let tmp = match NamedTempFile::new_in(tmp_path) {
+            Ok(tmp) => tmp,
+            Err(err) => {
+                return Some(Err(err.into()));
+            }
+        };
+
+        let pendding = match DownloadFilePending::from_tmp_url(
+            video.base_url.as_str(),
+            TempFilePendding::new("video.m4s", tmp, MediaFileType::Stream(video.id)),
+        ) {
+            Ok(pending) => pending,
+            Err(err) => {
+                return Some(Err(err.into()));
+            }
+        };
+
+        let response = match pendding.with_bg(pb).into_response().await {
+            Ok(response) => response.map(|res| {
+                if let Ok(size) = res.try_headers_size() {
+                    total_bytes.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+                    res.pb.as_ref().map(|pg| pg.inc_length(size));
+                }
+            }),
+            Err(err) => {
+                return Some(Err(err.into()));
+            }
+        };
+
+        Some(Ok(response))
     }
 
-    #[track_caller]
-    pub fn audio(
+    pub async fn audio(
         audio: Option<&response::Audio>,
         tmp_path: &Path,
         pb: DownloadProgressBar,
@@ -215,45 +328,69 @@ impl DownloadHandle {
         file_entry_json: &mut EntryOuput,
         index_video: &mut IndexVideo,
         index_audio: &mut IndexAudio,
-    ) -> Option<ECSHandleResult<TempFileReopen, DownloadFileError>> {
-        if audio.is_none() {
+    ) -> Option<Result<DownloadFileResponse, DownloadFileError>> {
+        let Some(audio) = audio else {
             return None;
-        }
-        let file_audio = audio
-            .as_ref()
-            .and_then(|a| {
-                file_entry_json.update_audio(a);
-                index_audio.update_audio(a);
-                index_video.update_audio_id(a.id);
+        };
 
-                DownloadFilePending::from_tmp_url(tmp_path, a.base_url.as_str()).ok()
-            })
-            .map(move |pending| {
-                pending
-                    .with_bg(pb)
-                    .into_ecs_handle_reopen_with_response("audio.m4s", move |res| {
-                        if let Ok(size) = res.try_headers_size() {
-                            total_bytes.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
-                            res.pg.as_ref().map(|pg| pg.inc_length(size));
-                        }
-                    })
-            });
+        file_entry_json.update_audio(audio);
+        index_audio.update_audio(audio);
+        index_video.update_audio_id(audio.id);
 
-        file_audio
+        let tmp = match NamedTempFile::new_in(tmp_path) {
+            Ok(tmp) => tmp,
+            Err(err) => {
+                return Some(Err(err.into()));
+            }
+        };
+
+        let pendding = match DownloadFilePending::from_tmp_url(
+            audio.base_url.as_str(),
+            TempFilePendding::new("audio.m4s", tmp, MediaFileType::Stream(index_video.id)),
+        ) {
+            Ok(pending) => pending,
+            Err(err) => {
+                return Some(Err(err.into()));
+            }
+        };
+
+        let response = match pendding.with_bg(pb).into_response().await {
+            Ok(response) => response.map(|res| {
+                if let Ok(size) = res.try_headers_size() {
+                    total_bytes.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+                    res.pb.as_ref().map(|pg| pg.inc_length(size));
+                }
+            }),
+            Err(err) => {
+                return Some(Err(err.into()));
+            }
+        };
+
+        Some(Ok(response))
     }
 
-    #[track_caller]
-    pub fn danmu_xml(
+    pub async fn danmu_xml(
         tmp_path: &Path,
         cid: i64,
-    ) -> ECSHandleResult<TempFileReopen, DownloadFileError> {
+    ) -> Result<DownloadFileResponse, DownloadFileError> {
         let tmp_path = tmp_path.to_path_buf();
-        let danmu_xml = tokio::spawn(async move {
-            let xml_url = format!("https://api.bilibili.com/x/v1/dm/list.so?oid={}", cid);
 
-            let http_response = DownloadFilePending::response(xml_url).await?;
+        let xml_url = format!("https://api.bilibili.com/x/v1/dm/list.so?oid={}", cid);
 
-            let bytes = http_response.bytes().await?;
+        let response = DownloadFileResponse::from_url(
+            xml_url,
+            TempFilePendding::new(
+                "danmaku.xml",
+                NamedTempFile::new_in(tmp_path)?,
+                MediaFileType::Infomation,
+            ),
+        )
+        .await?
+        .with_download(|mut res| async {
+            let mut bytes = BytesMut::new();
+            while let Some(chunk) = res.response.chunk().await? {
+                bytes.extend_from_slice(&chunk);
+            }
 
             // 解压 deflate 数据
             let mut decoder = flate2::bufread::DeflateDecoder::new(&bytes[..]);
@@ -262,17 +399,13 @@ impl DownloadHandle {
 
             decoder.read_to_end(&mut decompressed)?;
 
-            let mut file_danmu_xml = NamedTempFile::new_in(tmp_path)?;
+            res.tmp.write_all(&decompressed)?;
 
-            file_danmu_xml.write_all(&decompressed)?;
+            Ok(res)
+        })
+        .await;
 
-            file_danmu_xml
-                .reopen()
-                .map(|file| TempFileReopen::new("danmaku.xml", file))
-                .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::IO(err)))
-        });
-
-        ECSHandleResult::new(danmu_xml)
+        response
     }
 }
 
@@ -281,7 +414,9 @@ pub async fn download(
     media: &Media,
     bars: MultiProgress,
     tmp_path: &Path,
-    active_status: &[StatusModel],
+    active_status: &HashMap<i64, StatusModel>,
+    _active_downloadrule: &HashMap<i64, DownloadruleModel>,
+    _status_related_downloadrule: &BiHashMap<StatusId, DownloadruleId, FixedHasher, FixedHasher>,
 ) -> Result<(), DownloadFileError> {
     if !Path::new(tmp_path).exists() {
         let _ = fs::create_dir_all(tmp_path)?;
@@ -301,7 +436,7 @@ pub async fn download(
 
     let folders = active_status
         .iter()
-        .map(|model| Path::new(&model.path).join(&model.name))
+        .map(|(_, model)| Path::new(&model.path).join(&model.name))
         .filter(|path| path.is_dir() || (!path.exists() && fs::create_dir_all(path).is_ok()))
         .collect::<Vec<_>>();
 
@@ -316,8 +451,16 @@ pub async fn download(
 
     let mut index = IndexOuput::default();
 
-    let mut handle_icon = DownloadFilePending::from_tmp_url(tmp_path, media.pic.as_str())?
-        .into_ecs_handle_reopen("cover.jpg");
+    let response_icon = DownloadFilePending::from_tmp_url(
+        media.pic.as_str(),
+        TempFilePendding::new(
+            "cover.jpg",
+            NamedTempFile::new_in(tmp_path)?,
+            MediaFileType::Infomation,
+        ),
+    )?
+    .into_response()
+    .await?;
 
     let MediaInfoResp {
         code,
@@ -337,11 +480,6 @@ pub async fn download(
     else {
         media::MediaEntity::update(media::ActiveModel {
             aid: Unchanged(media.aid),
-            state: Set(match code {
-                -403 | 62012 | 62002 => MediaState::PermissionDenied,
-                _ => MediaState::Expired,
-            }
-            .to_string()),
             ..Default::default()
         })
         .exec(&db.db)
@@ -361,6 +499,14 @@ pub async fn download(
     file_entry_json.update_owner(&owner);
 
     let mut tmptofolder = FilesIntoFolders::new();
+
+    let mut response_files = HashMap::new();
+
+    let file_index_id = AtomicUsize::new(0);
+
+    response_files.insert(file_index_id.fetch_add(1, Ordering::Relaxed), response_icon);
+
+    let mut index_files = vec![];
 
     let only1p = pages.len() == 1;
     for Page { cid, page, part } in pages {
@@ -406,16 +552,24 @@ pub async fn download(
         let (mut index_video, mut index_audio): (IndexVideo, IndexAudio) =
             (Default::default(), Default::default());
 
-        let file_video = DownloadHandle::video(
+        let video_index = if let Some(file_video) = DownloadHandle::video_response(
             v.as_ref(),
             tmp_path,
             pb.clone(),
             total_bytes.clone(),
             &mut file_entry_json,
             &mut index_video,
-        );
+        )
+        .await
+        {
+            let id = file_index_id.fetch_add(1, Ordering::Relaxed);
+            response_files.insert(id, file_video?);
+            Some(id)
+        } else {
+            None
+        };
 
-        let file_audio = DownloadHandle::audio(
+        let audio_index = if let Some(file_audio) = DownloadHandle::audio(
             a.as_ref(),
             tmp_path,
             pb.clone(),
@@ -423,20 +577,41 @@ pub async fn download(
             &mut file_entry_json,
             &mut index_video,
             &mut index_audio,
-        );
+        )
+        .await
+        {
+            let id = file_index_id.fetch_add(1, Ordering::Relaxed);
+            response_files.insert(id, file_audio?);
+            Some(id)
+        } else {
+            None
+        };
 
-        let file_danmu = DownloadFilePending::from_tmp_url(
-            tmp_path,
+        if let Ok(file_danmu) = DownloadFilePending::from_tmp_url(
             format!(
                 "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid={}&segment_index=1",
                 media.cid
             ),
+            TempFilePendding::new(
+                "danmaku.pb",
+                NamedTempFile::new_in(tmp_path)?,
+                MediaFileType::Infomation,
+            ),
         )?
-        .into_ecs_handle_reopen("danmaku.pb");
+        .into_response()
+        .await
+        {
+            response_files.insert(file_index_id.fetch_add(1, Ordering::Relaxed), file_danmu);
+        };
 
-        let file_danmu_xml = DownloadHandle::danmu_xml(tmp_path, media.cid);
+        if let Ok(file_danmu_xml) = DownloadHandle::danmu_xml(tmp_path, media.cid).await {
+            response_files.insert(
+                file_index_id.fetch_add(1, Ordering::Relaxed),
+                file_danmu_xml,
+            );
+        };
 
-        let file_entry = {
+        let _file_entry = {
             file_entry_json.downloaded_bytes = pb.position();
             file_entry_json.page_data.from = "vupload".to_string();
             file_entry_json.is_completed = true;
@@ -445,113 +620,124 @@ pub async fn download(
             file_entry_json.time_create_stamp = duration_file_update.as_millis();
 
             file_entry_json.total_bytes = total_bytes.load(std::sync::atomic::Ordering::Relaxed);
-
-            let file_entry = NamedTempFile::new_in(tmp_path)?;
-
-            let entry_writer = io::BufWriter::new(&file_entry);
-            serde_json::to_writer_pretty(entry_writer, &file_entry_json)?; // 使用 pretty 格式化输出;
-
-            file_entry
-                .reopen()
-                .map(|file| TempFileReopen::new("entry.json", file))
         };
 
-        let mut aid_files = vec![];
+        index_files.push((audio_index, index_audio, video_index, index_video));
+    }
 
-        let (handle_icon, file_danmu, file_danmu_xml) = tokio::join!(
-            async { handle_icon.block_on() },
-            async move { file_danmu.block_on_take_result() },
-            async move { file_danmu_xml.block_on_take_result() },
+    let mut tasks = FuturesUnordered::new();
+
+    for (index, file) in response_files {
+        tasks.push(async move { (index, file.download().await) });
+    }
+
+    let mut file_penddings = HashMap::new();
+
+    while let Some((index, result)) = tasks.next().await {
+        match result {
+            Ok(file) => {
+                file_penddings.insert(index, file.tmp);
+            }
+            Err(err) => {
+                error!("download file error:{:?}", err);
+            }
+        }
+    }
+
+    let _file_entry = {
+        let file_entry = TempFilePendding::new(
+            "entry.json",
+            NamedTempFile::new_in(tmp_path)?,
+            MediaFileType::Infomation,
         );
 
-        if let Ok(file_icon) = handle_icon
-            && let Ok(file_icon) = file_icon.try_clone()
+        let entry_writer = io::BufWriter::new(&file_entry.tmp);
+        serde_json::to_writer_pretty(entry_writer, &file_entry_json)?; // 使用 pretty 格式化输出;
+
+        file_penddings.insert(file_index_id.fetch_add(1, Ordering::Relaxed), file_entry);
+    };
+
+    for (audio_index, mut index_audio, video_index, mut index_video) in index_files {
+        if let Some(audio) = audio_index
+            && let Some(file_audio) = file_penddings.get(&audio)
         {
-            aid_files.push(file_icon);
-        };
+            let (size, md5) = file_audio
+                .get_size_md5()
+                .unwrap_or((0, "get md5 error".to_string()));
 
-        if let Ok(file_danmu) = file_danmu {
-            aid_files.push(file_danmu)
-        };
+            index_audio.update_md5_size(md5, size);
 
-        if let Ok(file_danmu_xml) = file_danmu_xml {
-            aid_files.push(file_danmu_xml)
-        };
-
-        if let Ok(file_entry) = file_entry {
-            aid_files.push(file_entry)
-        };
-
-        // 视频id目录下
-        for folder in folders
-            .iter()
-            .map(|folder| folder.join(media.aid.to_string()))
-            .map(|aid_foler| aid_foler.join(format!("c_{}", cid.to_string())))
-        {
-            let files = aid_files
-                .iter()
-                .map(|file| file.try_clone())
-                .filter_map(|file| file.ok());
-
-            tmptofolder.add_path_and_files(folder, files);
+            index.audio.push(index_audio);
         }
 
-        let mut medias_files = vec![];
-
-        let (file_video, file_audio) = tokio::join!(
-            async move { file_video.map(|file_video| file_video.block_on_take_result()) },
-            async move { file_audio.map(|file_audio| file_audio.block_on_take_result()) },
-        );
-
-        if let Some(file_video) = file_video
-            && let Ok(file_video) = file_video
+        if let Some(video) = video_index
+            && let Some(file_video) = file_penddings.get(&video)
         {
-            if let Ok((size, md5)) = file_video.get_size_md5() {
-                index_video.update_md5_size(md5, size);
-            }
+            let (size, md5) = file_video
+                .get_size_md5()
+                .unwrap_or((0, "get md5 error".to_string()));
 
-            medias_files.push(file_video);
-        }
-
-        if let Some(file_audio) = file_audio
-            && let Ok(file_audio) = file_audio
-        {
-            if let Ok((size, md5)) = file_audio.get_size_md5() {
-                index_audio.update_md5_size(md5, size);
-            }
-
-            medias_files.push(file_audio);
-        }
-
-        // index.json
-        if let Ok(file_index) = NamedTempFile::new_in(tmp_path)?
-            .reopen()
-            .map(|file| TempFileReopen::new("index.json", file))
-            .map_err(|err| DownloadFileError::new(DownloadFileErrorKind::IO(err)))
-        {
-            let index_writer = io::BufWriter::new(&file_index.tmp);
+            index_video.update_md5_size(md5, size);
 
             index.video.push(index_video);
-            index.audio.push(index_audio);
+        }
+    }
+
+    // index.json
+    let _file_index = {
+        let ids = index.video.iter().map(|v| v.id).collect::<HashSet<_>>();
+
+        for id in ids {
+            let file_index = TempFilePendding::new(
+                "index.json",
+                NamedTempFile::new_in(tmp_path)?,
+                MediaFileType::Stream(id),
+            );
+
+            let index_writer = io::BufWriter::new(&file_index.tmp);
 
             serde_json::to_writer_pretty(index_writer, &index)?; // 使用 pretty 格式化输出;
 
-            medias_files.push(file_index);
+            file_penddings.insert(file_index_id.fetch_add(1, Ordering::Relaxed), file_index);
         }
+    };
 
-        // 视频清晰度目录下
-        for folder in folders
-            .iter()
-            .map(|folder| folder.join(media.aid.to_string()))
-            .map(|aid_foler| aid_foler.join(format!("c_{}", cid.to_string())))
-            .map(|up_cid| up_cid.join(v.as_ref().map(|v| v.id.to_string()).unwrap_or_default()))
-        {
-            let files = medias_files
-                .iter()
-                .map(|file| file.try_clone())
-                .filter_map(|file| file.ok());
+    let path = folders
+        .iter()
+        .map(|folder| folder.join(media.aid.to_string()))
+        .map(|aid_foler| aid_foler.join(format!("c_{}", media.cid.to_string())))
+        .collect::<Vec<_>>();
 
-            tmptofolder.add_path_and_files(folder, files);
+    for (_index, file) in file_penddings {
+        let r#type = file.r#type;
+        let name = file.name.clone();
+
+        let reopon = match file.to_reopon() {
+            Ok(result) => result,
+            Err(err) => {
+                error!("tmp<{}> into reopon error:{:?}", name, err);
+                continue;
+            }
+        };
+
+        for path in path.iter() {
+            let reopon = match reopon.try_clone() {
+                Ok(result) => result,
+                Err(err) => {
+                    error!("tmp<{}> reopon try clone error:{:?}", reopon.name, err);
+                    continue;
+                }
+            };
+
+            match r#type {
+                MediaFileType::Infomation => {
+                    tmptofolder.add(path, reopon);
+                }
+                MediaFileType::Stream(id) => {
+                    let path = path.join(id.to_string());
+                    tmptofolder.add(path, reopon);
+                }
+            }
         }
     }
 
@@ -559,7 +745,6 @@ pub async fn download(
 
     media::MediaEntity::update(media::ActiveModel {
         aid: Unchanged(media.aid),
-        state: Set(MediaState::Completed.to_string()),
         ..Default::default()
     })
     .exec(&db.db)
@@ -568,30 +753,101 @@ pub async fn download(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MediaFileType {
+    /// cover.jpg
+    /// danmaku.pb
+    /// danmaku.xml
+    /// entry.json
+    Infomation,
+
+    // audio.m4s
+    // index.json
+    // video.m4s
+    Stream(i64),
+}
+
+#[derive(Debug, Deref, DerefMut)]
+pub struct TempFilePendding {
+    pub name: Cow<'static, str>,
+    pub r#type: MediaFileType,
+
+    #[deref]
+    pub tmp: NamedTempFile,
+}
+
+impl TempFilePendding {
+    pub fn new<T: Into<Cow<'static, str>>>(
+        name: T,
+        tmp: NamedTempFile,
+        r#type: MediaFileType,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            tmp,
+            r#type,
+        }
+    }
+
+    pub fn get_size_md5(&self) -> Result<(u64, String), io::Error> {
+        let file = self.as_file();
+
+        let size = file.metadata()?.len();
+
+        // 2. 打开一个独立的文件句柄（克隆），避免影响原句柄
+        let mut file = self.tmp.as_file().try_clone()?;
+
+        file.seek(SeekFrom::Start(0))?;
+
+        let mut v_context = md5::Context::new();
+        let mut v_buffer = [0; 8192];
+
+        loop {
+            let n = io::Read::read(&mut file, &mut v_buffer)?;
+            if n == 0 {
+                break;
+            }
+            v_context.consume(&v_buffer[..n]);
+        }
+
+        let md5_video = v_context.finalize();
+        let hex_video = hex::encode(md5_video.as_ref());
+
+        Ok((size, hex_video))
+    }
+
+    pub fn to_reopon(self) -> Result<TempFileReopen, io::Error> {
+        let reopon = self.tmp.reopen()?;
+        Ok(TempFileReopen {
+            name: self.name,
+            file: reopon,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct TempFileReopen {
     pub name: Cow<'static, str>,
-    /// PartialEq, Eq, Hash will ignore this,
-    pub tmp: File,
+    pub file: File,
 }
 
 impl TempFileReopen {
     pub fn new<T: Into<Cow<'static, str>>>(name: T, tmp: File) -> Self {
         Self {
             name: name.into(),
-            tmp,
+            file: tmp,
         }
     }
 
     pub fn try_clone(&self) -> Result<Self, io::Error> {
         Ok(Self {
             name: self.name.clone(),
-            tmp: self.tmp.try_clone()?,
+            file: self.file.try_clone()?,
         })
     }
 
     pub fn get_size_md5(&self) -> Result<(u64, String), io::Error> {
-        let mut file = self.tmp.try_clone()?;
+        let mut file = self.file.try_clone()?;
 
         let size = file.metadata()?.len();
 
@@ -613,7 +869,7 @@ impl TempFileReopen {
     }
 
     pub fn size(&self) -> Result<u64> {
-        let meta = self.tmp.metadata()?;
+        let meta = self.file.metadata()?;
         Ok(meta.len())
     }
 }
@@ -636,6 +892,28 @@ pub struct FilesIntoFolders(pub HashMap<PathBuf, HashSet<TempFileReopen>>);
 impl FilesIntoFolders {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn add<P: Into<PathBuf>, T: Into<TempFileReopen>>(
+        &mut self,
+        folder: P,
+        file: T,
+    ) -> &mut Self {
+        match self.entry(folder.into()) {
+            hash_map::Entry::Occupied(mut occupied) => {
+                let file = file.into();
+
+                let name = file.name.clone();
+                if occupied.get_mut().insert(file) {
+                    warn!("temp file to name has replace:{:?}", name);
+                }
+            }
+            hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(HashSet::from_iter([file.into()]));
+            }
+        }
+
+        self
     }
 
     pub fn add_path_and_files<
@@ -688,7 +966,7 @@ impl FilesIntoFolders {
             let mut to_vec = Vec::from_iter(tempfiles);
 
             for file_name in to_vec.iter_mut() {
-                if let Err(e) = file_name.tmp.seek(io::SeekFrom::Start(0)) {
+                if let Err(e) = file_name.file.seek(io::SeekFrom::Start(0)) {
                     error!("Failed to seek file {:?} to start: {}", file_name.name, e);
                     continue;
                 }
@@ -708,7 +986,7 @@ impl FilesIntoFolders {
                     }
                 };
 
-                match io::copy(&mut file_name.tmp, &mut target_file) {
+                match io::copy(&mut file_name.file, &mut target_file) {
                     Ok(_bytes) => {
                         // info!("Copied {} bytes to {:?}", bytes, target_path);
                         ()
@@ -752,49 +1030,53 @@ impl Default for DownloadProgressBar {
 
 #[derive(Debug)]
 pub struct DownloadFilePending {
-    pub pg: Option<DownloadProgressBar>,
-    pub tmp: NamedTempFile,
+    pub pb: Option<DownloadProgressBar>,
+    pub tmp: TempFilePendding,
     pub url: Url,
 }
 
 impl DownloadFilePending {
-    pub fn new<T: IntoUrl>(url: T, tmp: NamedTempFile) -> Result<Self, DownloadFileError> {
+    pub fn new<T: IntoUrl>(url: T, tmp: TempFilePendding) -> Result<Self, DownloadFileError> {
         Ok(Self {
-            pg: None,
+            pb: None,
             url: url.into_url()?,
             tmp,
         })
     }
 
     #[track_caller]
-    pub fn from_tmp_url<P: AsRef<Path>, T: IntoUrl>(
-        dir: P,
+    pub fn from_tmp_url<T: IntoUrl>(
         url: T,
+        tmp: TempFilePendding,
     ) -> Result<Self, DownloadFileError> {
-        let tmp = NamedTempFile::new_in(dir)?;
         let url = url.into_url()?;
 
-        Ok(Self { pg: None, tmp, url })
+        Ok(Self { pb: None, tmp, url })
     }
 
     pub fn new_with_bg<T: IntoUrl>(
         url: T,
-        tmp: NamedTempFile,
+        tmp: TempFilePendding,
         pg: DownloadProgressBar,
     ) -> Result<Self, reqwest::Error> {
         Ok(Self {
-            pg: Some(pg),
+            pb: Some(pg),
             tmp,
             url: url.into_url()?,
         })
     }
 
     pub async fn into_response(self) -> Result<DownloadFileResponse, DownloadFileError> {
-        let Self { pg, tmp, url } = self;
+        let Self { pb, tmp, url } = self;
 
-        let response = Self::response(url.as_str()).await?;
+        let mut response =
+            DownloadFileResponse::from_response(Self::response(url.as_str()).await?, tmp);
 
-        Ok(DownloadFileResponse { pg, tmp, response })
+        if let Some(pb) = pb {
+            response = response.with_pb(pb);
+        }
+
+        Ok(response)
     }
 
     pub async fn response<T: IntoUrl>(url: T) -> Result<Response, DownloadFileError> {
@@ -805,7 +1087,7 @@ impl DownloadFilePending {
     }
 
     pub fn progress_bar(&mut self, part: &str) -> &mut Self {
-        let Some(pg) = self.pg.as_mut() else {
+        let Some(pg) = self.pb.as_mut() else {
             return self;
         };
 
@@ -820,7 +1102,7 @@ impl DownloadFilePending {
     }
 
     pub fn set_bg(&mut self, dpb: DownloadProgressBar) -> &mut Self {
-        let _ = self.pg.insert(dpb);
+        let _ = self.pb.insert(dpb);
 
         self
     }
@@ -847,29 +1129,7 @@ impl DownloadFilePending {
             pending
                 .into_response()
                 .await?
-                .task()
-                .await
-                .and_then(|file| Ok(file.reopen()?))
-                .map(|file| TempFileReopen::new(name, file))
-        });
-
-        ECSHandleResult::new(file_icon)
-    }
-
-    pub fn into_ecs_handle_reopen_with_response<
-        T: Into<Cow<'static, str>> + Send + 'static,
-        F: FnOnce(&DownloadFileResponse) + Send + 'static,
-    >(
-        self,
-        name: T,
-        func: F,
-    ) -> ECSHandleResult<TempFileReopen, DownloadFileError> {
-        let file_icon = self.spawn_handle(move |pending| async move {
-            pending
-                .into_response()
-                .await?
-                .with(func)
-                .task()
+                .download_into_file_pendding()
                 .await
                 .and_then(|file| Ok(file.reopen()?))
                 .map(|file| TempFileReopen::new(name, file))
@@ -881,25 +1141,35 @@ impl DownloadFilePending {
 
 #[derive(Debug)]
 pub struct DownloadFileResponse {
-    pub pg: Option<DownloadProgressBar>,
+    pub pb: Option<DownloadProgressBar>,
     pub response: Response,
-    pub tmp: NamedTempFile,
+    pub tmp: TempFilePendding,
 }
 
 impl DownloadFileResponse {
-    pub fn with_pb<F: FnOnce(&DownloadProgressBar, &Response, &NamedTempFile)>(
+    pub fn map_pb<F: FnOnce(&DownloadProgressBar, &Response, &TempFilePendding)>(
         self,
         func: F,
     ) -> Self {
-        let Self { pg, response, tmp } = &self;
+        let Self {
+            pb: pg,
+            response,
+            tmp,
+            ..
+        } = &self;
         if let Some(pg) = pg.as_ref() {
             func(pg, response, tmp);
         }
         self
     }
 
-    pub fn with<F: FnOnce(&Self)>(self, func: F) -> Self {
+    pub fn map<F: FnOnce(&Self)>(self, func: F) -> Self {
         func(&self);
+        self
+    }
+
+    pub fn with_pb(mut self, pb: DownloadProgressBar) -> Self {
+        self.pb = Some(pb);
         self
     }
 
@@ -916,18 +1186,26 @@ impl DownloadFileResponse {
     }
 
     pub fn into_task(self) -> DownloadFileTask {
-        let handle = tokio::spawn(async move { self.task().await });
+        let handle = tokio::spawn(async move { self.download_into_file_pendding().await });
         DownloadFileTask(ECSHandleResult::new(handle))
+    }
+
+    pub fn from_response(response: Response, tmp: TempFilePendding) -> Self {
+        Self {
+            pb: None,
+            tmp,
+            response,
+        }
     }
 
     pub async fn from_url<T: IntoUrl>(
         url: T,
-        tmp: NamedTempFile,
+        tmp: TempFilePendding,
     ) -> Result<Self, DownloadFileError> {
         let response = DownloadFilePending::response(url).await?;
 
         Ok(Self {
-            pg: None,
+            pb: None,
             tmp,
             response,
         })
@@ -937,9 +1215,25 @@ impl DownloadFileResponse {
         &self.response
     }
 
-    pub async fn task(self) -> Result<NamedTempFile, DownloadFileError> {
+    pub fn with_mut<F: Fn(&mut Self)>(mut self, func: F) -> Self {
+        func(&mut self);
+
+        self
+    }
+
+    pub async fn with_download<
+        F: FnOnce(Self) -> O,
+        O: Future<Output = Result<Self, DownloadFileError>>,
+    >(
+        self,
+        func: F,
+    ) -> Result<Self, DownloadFileError> {
+        func(self).await
+    }
+
+    pub async fn download(self) -> Result<Self, DownloadFileError> {
         let Self {
-            pg,
+            pb,
             mut tmp,
             mut response,
         } = self;
@@ -949,6 +1243,37 @@ impl DownloadFileResponse {
                 Ok(Some(chunk)) => {
                     tmp.write_all(&chunk)?;
                     tmp.flush()?;
+
+                    if let Some(pb) = pb.as_ref() {
+                        pb.inc(chunk.len() as u64);
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(DownloadFileError {
+                        caller: MaybeLocation::caller(),
+                        error: DownloadFileErrorKind::Reqwest(e),
+                    });
+                }
+            }
+        }
+
+        Ok(Self { pb, response, tmp })
+    }
+
+    pub async fn download_into_file_pendding(self) -> Result<TempFilePendding, DownloadFileError> {
+        let Self {
+            pb: pg,
+            mut tmp,
+            mut response,
+            ..
+        } = self;
+
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    tmp.tmp.write_all(&chunk)?;
+                    tmp.tmp.flush()?;
                     if let Some(pb) = pg.as_ref() {
                         pb.inc(chunk.len() as u64);
                     }
@@ -977,11 +1302,12 @@ impl DownloadFileResponse {
 }
 
 #[derive(Debug, Component)]
-pub struct DownloadFileTask(pub ECSHandleResult<NamedTempFile, DownloadFileError>);
+pub struct DownloadFileTask(pub ECSHandleResult<TempFilePendding, DownloadFileError>);
 
 impl DownloadFileTask {
     pub fn new(response: DownloadFileResponse, runtimer: &mut TokioTasksRuntime) -> Self {
-        let task = runtimer.spawn_background_task(move |_ctx| response.task());
+        let task =
+            runtimer.spawn_background_task(move |_ctx| response.download_into_file_pendding());
 
         let handle = ECSHandleResult::new(task);
 
@@ -991,7 +1317,7 @@ impl DownloadFileTask {
     pub async fn from_url<T: IntoUrl>(
         runtimer: &mut TokioTasksRuntime,
         url: T,
-        tmp: NamedTempFile,
+        tmp: TempFilePendding,
     ) -> Result<Self, DownloadFileError> {
         let response = DownloadFileResponse::from_url(url, tmp).await?;
         Ok(Self::new(response, runtimer))
@@ -1025,6 +1351,7 @@ impl std::error::Error for DownloadFileError {
             DownloadFileErrorKind::Serialize(e) => Some(e),
             DownloadFileErrorKind::Status(error) => error.source(),
             DownloadFileErrorKind::Page(e) => e.source(),
+            DownloadFileErrorKind::MediaPage => None,
         }
     }
 }
@@ -1039,10 +1366,10 @@ pub enum DownloadFileErrorKind {
     Db(sea_orm::DbErr),
     Page(anyhow::Error),
     Serialize(serde_json::Error),
+    MediaPage,
 }
 
 impl std::fmt::Display for DownloadFileError {
-    #[track_caller]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.error {
             DownloadFileErrorKind::Reqwest(error) => {
@@ -1068,6 +1395,13 @@ impl std::fmt::Display for DownloadFileError {
             }
             DownloadFileErrorKind::Serialize(error) => {
                 write!(f, "Serialize error:{}, caller:{:?}", error, self.caller)
+            }
+            DownloadFileErrorKind::MediaPage => {
+                write!(
+                    f,
+                    "media page error, maybe media is not exist, caller:{:?}",
+                    self.caller
+                )
             }
         }
     }

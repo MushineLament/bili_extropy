@@ -1,0 +1,167 @@
+use std::{
+    borrow::Cow,
+    fmt::{Debug, Display},
+};
+
+use api_req::ApiCaller;
+use bevy::{
+    ecs::{component::Component, resource::Resource},
+    prelude::{Deref, DerefMut},
+};
+use bevy_tokio_tasks::TokioTasksRuntime;
+use futures::TryFutureExt;
+use migration::OnConflict;
+use sea_orm::EntityTrait;
+
+use crate::{
+    api::BiliApi,
+    components::{
+        download::{DownloadFileError, DownloadPendding, MediaInfoAidPayload, MediaUniqueId},
+        downloadtask::load::LoadDownloadtask,
+        handle::ECSHandleResult,
+    },
+    db::Db,
+    entity::{
+        MediaAid,
+        downloadtask::{self, DownloadtaskActiveModel},
+        media::MediaInfoSingle,
+    },
+    table::ToTableRecord,
+};
+
+pub type TaskId = i64;
+
+#[derive(Debug, Component, Deref, DerefMut)]
+pub struct InsertDownloadtaskTask(pub ECSHandleResult<TaskId, anyhow::Error>);
+
+impl InsertDownloadtaskTask {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime, model: DownloadtaskActiveModel) -> Self {
+        let active_id = model.id.try_as_ref().cloned();
+
+        let mut on_conflict = OnConflict::columns([downloadtask::Column::Id])
+            .update_columns([
+                downloadtask::Column::TypeId,
+                downloadtask::Column::GenericId,
+            ])
+            .to_owned();
+
+        if model.state.is_set() {
+            on_conflict.update_column(downloadtask::Column::State);
+        }
+
+        let task = async move {
+            let opr = downloadtask::DownloadtaskEntity::insert(model).on_conflict(on_conflict);
+
+            let pri = if let Some(id) = active_id {
+                opr.exec_without_returning(&db.db).await?;
+                id
+            } else {
+                opr.exec_with_returning(&db.db).await?.id
+            };
+
+            Ok(pri)
+        };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+/// 经过处理的，等待下载的最小视频单位media
+#[derive(Debug, Component, Clone)]
+pub struct DownloadtaskRelatedMediaPending {
+    /// 唯一性去重，bvid必需经过转化为aid
+    pub media_id: MediaAid,
+
+    /// 关联的taskid，下载完成后，会将taskid下对应的mediaaid更新
+    pub taskid: Vec<TaskId>,
+}
+
+impl ToTableRecord<2> for &DownloadtaskRelatedMediaPending {
+    fn to_record(&self) -> [Cow<'_, str>; 2] {
+        [
+            Cow::Owned(self.media_id.to_string()),
+            Cow::Owned(
+                self.taskid
+                    .iter()
+                    .map(|id| format!("{} ", id.to_string()))
+                    .collect::<String>(),
+            ),
+        ]
+    }
+}
+
+impl ToTableRecord<2> for DownloadtaskRelatedMediaPending {
+    fn to_record(&self) -> [Cow<'_, str>; 2] {
+        [
+            Cow::Owned(self.media_id.to_string()),
+            Cow::Owned(
+                self.taskid
+                    .iter()
+                    .map(|id| format!("{} ", id.to_string()))
+                    .collect::<String>(),
+            ),
+        ]
+    }
+}
+
+impl Default for DownloadtaskRelatedMediaPending {
+    fn default() -> Self {
+        Self {
+            media_id: -1,
+            taskid: Default::default(),
+        }
+    }
+}
+
+impl DownloadtaskRelatedMediaPending {
+    pub async fn task(db: &Db) -> Result<Vec<Self>, DownloadFileError> {
+        let result = LoadDownloadtask::related_all_medias(db).await?;
+
+        Ok(result.into_values().collect())
+    }
+}
+
+impl DownloadPendding for DownloadtaskRelatedMediaPending {
+    fn to_response(
+        &self,
+    ) -> impl Future<Output = anyhow::Result<MediaInfoSingle, DownloadFileError>> + Send {
+        BiliApi::request(MediaInfoAidPayload { aid: self.media_id }).map_err(Into::into)
+    }
+
+    fn media_aid(&self) -> impl Future<Output = Result<MediaAid, DownloadFileError>> {
+        async { Ok(self.media_id) }
+    }
+
+    fn related_task_id(
+        &self,
+        _db: &Db,
+    ) -> impl Future<Output = Result<Vec<TaskId>, DownloadFileError>> {
+        async { Ok(self.taskid.clone()) }
+    }
+
+    fn massage(&self) -> impl Display {
+        self.media_id.to_string()
+    }
+
+    fn into_unique_id(self) -> MediaUniqueId {
+        MediaUniqueId::Aid(self.media_id)
+    }
+}
+
+/// 经过处理视频待下载集合，拥有对应的taskid
+#[derive(Debug, Resource, Deref, DerefMut)]
+pub struct MediaDownloadList(
+    pub ECSHandleResult<Vec<DownloadtaskRelatedMediaPending>, DownloadFileError>,
+);
+
+impl MediaDownloadList {
+    pub fn new(db: Db, runtimer: &mut TokioTasksRuntime) -> Self {
+        let task = async move { DownloadtaskRelatedMediaPending::task(&db).await };
+        let handle = runtimer.spawn_background_task(|_ctx| task);
+        Self(ECSHandleResult::new(handle))
+    }
+}
+
+/// fetch downloadtask upper's media.
+#[derive(Debug, Component, Default, Clone, PartialEq, Eq, Hash)]
+pub struct DownloadtaskRelatedUpperMedias;

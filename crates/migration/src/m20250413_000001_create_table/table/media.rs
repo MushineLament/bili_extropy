@@ -13,8 +13,6 @@ pub enum Media {
     Title,
     /// 视频的类型(?)
     Type,
-    /// 下载状态
-    State,
 }
 
 impl Media {
@@ -28,21 +26,6 @@ impl Media {
             .col(string(Media::Title))
             .col(
                 enumeration(Media::Type, "type", ["Video", "Audio", "Collection"]).default("Video"),
-            )
-            .col(
-                enumeration(
-                    Media::State,
-                    "state",
-                    [
-                        "Pending",
-                        "Downloading",
-                        "Completed",
-                        "Failed",
-                        "Expired",
-                        "PermissionDenied",
-                    ],
-                )
-                .default("Pending"),
             )
             .primary_key(Index::create().col(Media::Aid))
             .to_owned()

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    entity::{media, up},
+    entity::{media, upper},
     response,
 };
 
@@ -123,7 +123,7 @@ impl EntryOuput {
         self
     }
 
-    pub fn update_owner(&mut self, owner: &up::Upper) -> &mut Self {
+    pub fn update_owner(&mut self, owner: &upper::Upper) -> &mut Self {
         self.owner_id = owner.mid;
         self.owner_name = owner.name.clone();
         self

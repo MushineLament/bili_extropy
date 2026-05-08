@@ -1,3 +1,5 @@
+use std::mem;
+
 use bevy::ecs::change_detection::MaybeLocation;
 
 use tokio::task::{JoinError, JoinHandle};
@@ -5,6 +7,7 @@ use tokio::task::{JoinError, JoinHandle};
 #[derive(Debug)]
 pub enum ECSHandleError<E> {
     NotFinished,
+    HasBeenTake,
     JoinError(JoinError),
     Error(E),
 }
@@ -51,14 +54,38 @@ impl<O, T, E> ECSHandleInner<O, T, E> {
     }
 
     /// not any check,wrap!
-    pub fn take_result(self) -> Result<T, ECSHandleError<E>> {
+    pub fn as_result(self) -> Result<T, ECSHandleError<E>> {
         self.data
+    }
+
+    /// not any check,wrap!
+    pub fn take_result(&mut self) -> Result<T, ECSHandleError<E>> {
+        mem::replace(&mut self.data, Err(ECSHandleError::HasBeenTake))
     }
 
     pub fn is_finished(&self) -> bool {
         match self.data.as_ref() {
             Ok(_) => true,
-            Err(err) => err.is_finished(),
+            Err(err) => err.is_finished() || self.handle.is_finished(),
+        }
+    }
+
+    #[track_caller]
+    pub fn repeat(&mut self, src: JoinHandle<O>) -> Self {
+        let Self {
+            handle,
+            data,
+            caller,
+        } = self;
+
+        let handle = mem::replace(handle, src);
+        let data = mem::replace(data, Err(ECSHandleError::NotFinished));
+        let caller = mem::replace(caller, MaybeLocation::caller());
+
+        Self {
+            handle,
+            data,
+            caller,
         }
     }
 }
@@ -74,6 +101,10 @@ impl<T, E> ECSHandleInner<T, T, E> {
     }
 
     pub fn try_result(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
+        if !self.is_finished() {
+            return Err(&ECSHandleError::NotFinished);
+        }
+
         let Self {
             handle,
             data,
@@ -84,13 +115,14 @@ impl<T, E> ECSHandleInner<T, T, E> {
             return Ok(data);
         }
 
-        if !handle.is_finished() {
-            return Err(&ECSHandleError::NotFinished);
+        if data
+            .as_ref()
+            .is_err_and(|err| matches!(err, ECSHandleError::NotFinished))
+        {
+            let result =
+                bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
+            *data = result;
         }
-
-        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
-
-        *data = result;
 
         data.as_mut().map_err(|err| &*err)
     }
@@ -130,6 +162,10 @@ impl<T, E> ECSHandleInner<Result<T, E>, T, E> {
     }
 
     pub fn try_result(&mut self) -> Result<&mut T, &ECSHandleError<E>> {
+        if !self.is_finished() {
+            return Err(&ECSHandleError::NotFinished);
+        }
+
         let Self {
             handle,
             data,
@@ -140,13 +176,15 @@ impl<T, E> ECSHandleInner<Result<T, E>, T, E> {
             return Ok(data);
         }
 
-        if !handle.is_finished() {
-            return Err(&ECSHandleError::NotFinished);
+        if data
+            .as_ref()
+            .is_err_and(|err| matches!(err, ECSHandleError::NotFinished))
+        {
+            let result =
+                bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
+
+            *data = result.and_then(|result| result.map_err(|err| ECSHandleError::Error(err)));
         }
-
-        let result = bevy::tasks::block_on(handle).map_err(|err| ECSHandleError::JoinError(err));
-
-        *data = result.and_then(|result| result.map_err(|err| ECSHandleError::Error(err)));
 
         data.as_mut().map_err(|err| &*err)
     }
@@ -208,6 +246,33 @@ mod tests {
 
             assert!(handle.is_finished());
             println!("handle size:{:?}", size_of_val(&handle));
+        });
+
+        runtime.block_on(task).unwrap()
+    }
+
+    #[test]
+    fn try_result_but_has_error() {
+        let runtime = Runtime::new().unwrap();
+
+        let task = runtime.spawn(async {
+            let task = tokio::spawn(async {
+                tokio::time::sleep(Duration::from_secs_f32(1.0)).await;
+                Err(())
+            });
+
+            let mut handle = ECSHandleInner::<Result<(), ()>, (), ()>::new(task);
+
+            assert!(!handle.is_finished());
+
+            let result = handle.block_on();
+
+            assert!(result.is_err());
+
+            let result = handle.try_result();
+            assert!(result.is_err());
+
+            let _result = handle.block_on();
         });
 
         runtime.block_on(task).unwrap()
