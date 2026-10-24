@@ -1,0 +1,47 @@
+[package]
+name = "origin"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", default-features = false, features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "process",
+] }
+futures = { version = "0.3" }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+const_format = { version = "0.2", features = ["fmt"] }
+dashmap = { version = "6.1" }
+api_req = { version = "0.5.2", features = ["cookies"] }
+reqwest = { version = "0.13" }
+url = { version = "2.5", features = ["serde"] }
+cookie = { version = "0.18" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+serde_urlencoded = { version = "0.7" }
+qrcode = { version = "0.14", default-features = false }
+tabled = { version = "0.22.0" }
+indicatif = { version = "0.18.4" }
+md5 = { version = "0.8.0" }
+hex = { version = "0.4" }
+sea-orm = { version = "2.0.2", features = [
+    "sqlx-sqlite",
+    "runtime-tokio",
+    "macros",
+] }
+tempfile = { version = "3.20" }
+flate2 = "1.0"
+
+migration = { path = "../migration" }
+
+itertools = "0.15.0"
+strum = { version = "0.28.0", features = ["derive"] }
+chrono = "0.4.44"
+bytes = "1.11.1"
+bimap = "0.6.3"
+
+clap = "4.6.7"
+clap_complete = "4.6.11"
